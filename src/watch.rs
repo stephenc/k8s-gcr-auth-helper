@@ -1,3 +1,4 @@
+use crate::credentials::K8sImagePullSecret;
 use crate::Credentials;
 use chrono::{Duration, Utc};
 use futures::{StreamExt, TryStreamExt};
@@ -7,7 +8,6 @@ use kube::client::APIClient;
 use kube::runtime::Informer;
 use kube::{Api, Resource};
 use regex::Regex;
-use crate::credentials::K8sImagePullSecret;
 
 pub struct Watcher<'a> {
     client: APIClient,
@@ -32,12 +32,13 @@ impl K8sImagePullSecret for Watcher<'_> {
 
 impl Watcher<'_> {
     /// Main entry point for the watcher
-    pub async fn run<'a>(
+    pub async fn run(
         client: APIClient,
-        registry_url: &'a str,
-        namespace: &'a str,
-        secret_name: &'a str,
-    ) -> anyhow::Result < () >  {
+        registry_url: &str,
+        namespace: &str,
+        secret_name: &str,
+    ) -> anyhow::Result<()> {
+        debug!("Target secret: {}", secret_name);
         let runner = Watcher {
             client,
             registry_url,
@@ -62,15 +63,17 @@ impl Watcher<'_> {
         match event {
             WatchEvent::Added(event) => {
                 if Self::is_recent_gcr_auth_failure(&event) {
-                    info!("{}", event.message.unwrap_or_else(|| "".into()));
-                    let credentials = Credentials::from_gcloud(self.registry_url)?;
+                    debug!("{}", event.message.unwrap_or_else(|| "".into()));
+                    let credentials = Credentials::from_gcloud(self.registry_url).await?;
                     let data = credentials.as_secret_bytes(self);
                     let pp = PostParams::default();
                     let secrets: Api<Secret> = Api::namespaced(self.client.clone(), self.namespace);
                     if secrets.get(self.secret_name).await.is_ok() {
                         secrets.replace(self.secret_name, &pp, data).await?;
+                        debug!("Secret {} updated", self.secret_name);
                     } else {
                         secrets.create(&pp, data).await?;
+                        debug!("Secret {} created", self.secret_name);
                     }
                 }
                 Ok(())
@@ -80,7 +83,7 @@ impl Watcher<'_> {
     }
 
     /// Tests if the event is one for a recent auth failure.
-    fn is_recent_gcr_auth_failure(event: &Event) -> bool {
+    pub(crate) fn is_recent_gcr_auth_failure(event: &Event) -> bool {
         event // must be recent
             .last_timestamp
             .clone()
@@ -101,9 +104,6 @@ impl Watcher<'_> {
     }
 
     /// The Regex of the event messages corresponding to an auth failure against GCR.
-    const EVENT_MESSAGE_REGEX: &'static str = r#"(?x)  # Ignore whitespace and enable line comments
-        ^Failed to pull image                          # Message line prefix
-        "[^"](?:https?://)?[^/]*gcr\.io[^"]*".*        # Includes a GCR reprository
-        desc = (?:(?:unexpected status code)|(?:failed to resolve image)).*
-        (?:(?:403 Forbidden)|(?:401 Unauthorized))$"#;
+    pub const EVENT_MESSAGE_REGEX: &'static str =
+        r#"^Failed to pull image.*gcr\.io.*(?:(?:403 Forbidden)|(?:401 Unauthorized))$"#;
 }

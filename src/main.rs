@@ -13,7 +13,7 @@ use env_logger::Env;
 use kube::client::APIClient;
 use kube::config;
 
-use k8s_gcr_auth_helper::Watcher;
+use k8s_gcr_auth_helper::{Runner, Setup, Watcher};
 
 /// Entry point
 #[tokio::main]
@@ -37,43 +37,146 @@ async fn main() -> anyhow::Result<()> {
                 .value_name("NAMESPACE")
                 .help("The namespace to create the secret in (defaults to current namespace)"),
         )
+        .arg(
+            Arg::with_name("debug")
+                .short("d")
+                .long("debug")
+                .help("Enable debug logging"),
+        )
+        .arg(
+            Arg::with_name("in_cluster")
+                .long("in-cluster")
+                .help("Try to resolve in-cluster Kubernetes API connection details")
+        )
         .subcommand(
-            SubCommand::with_name("watch")
-                .about("Listens for authentication failures and creates/updates a secret")
+            SubCommand::with_name("local")
+                .about("Locally listens for authentication failures and creates/updates a secret using gcloud")
                 .arg(
                     Arg::with_name("secret_name")
                         .value_name("SECRET NAME")
                         .help("The name of the dockerconfigjson secret to create/update")
                         .required(true)
-                        .index(0),
+                        .index(1),
                 ),
+        )
+        .subcommand(
+            SubCommand::with_name("run")
+                .about("Controller for in-cluster listening for authentication failures and creates/updates a secret using a refresh token secret created by 'add'")
+                .arg(
+                    Arg::with_name("secret_name")
+                        .value_name("SECRET NAME")
+                        .help("The name of the dockerconfigjson secret to create/update")
+                        .required(true)
+                        .index(1),
+                ),
+        )
+        .subcommand(
+            SubCommand::with_name("remove")
+                .about("Removes an in-cluster controller")
+                .arg(
+                    Arg::with_name("secret_name")
+                        .value_name("SECRET NAME")
+                        .help("The name of the managed dockerconfigjson secret")
+                        .required(true)
+                        .index(1),
+                )
+        )
+        .subcommand(
+            SubCommand::with_name("add")
+                .about("Adds an in-cluster controller")
+                .arg(
+                    Arg::with_name("secret_name")
+                        .value_name("SECRET NAME")
+                        .help("The name of the managed dockerconfigjson secret")
+                        .required(true)
+                        .index(1),
+                )
+                .arg(
+                    Arg::with_name("no_browser")
+                        .long("no-browser")
+                        .help("Forbid automatic browser launch"),
+                )
+                .arg(
+                    Arg::with_name("scope")
+                        .long("scope")
+                        .value_name("SCOPE")
+                        .takes_value(true)
+                        .help("The token scope to request (default: https://www.googleapis.com/auth/cloud-platform)")
+                )
+                .arg(
+                    Arg::with_name("controller_image")
+                        .long("controller-image")
+                        .value_name("IMAGE")
+                        .takes_value(true)
+                        .help(&format!("The controller image to use (default: {})", Setup::default_controller_image()))
+                )
+            ,
         )
         .get_matches();
     // Set up logging
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    {
+        let default_level = if matches.is_present("debug") {
+            format!("info,{}=debug", env!("CARGO_PKG_NAME").replace('-', "_"))
+        } else {
+            "info".into()
+        };
+        env_logger::Builder::from_env(Env::default().default_filter_or(&default_level)).init();
+    }
 
     // What registry are we forwarding authentication to
     let registry_url = matches.value_of("registry_url").unwrap_or("https://gcr.io");
+    debug!("Target registry: {}", registry_url);
 
     // Load the kubeconfig file.
-    let kubeconfig = config::load_kube_config().await?;
+    let kubeconfig = if matches.is_present("in_cluster") {
+        config::incluster_config()?
+    } else {
+        config::load_kube_config().await?
+    };
 
     // what namespace are we working in
     let namespace = matches
         .value_of("namespace")
         .unwrap_or(&kubeconfig.default_ns);
+    debug!("Target namespace: {}", namespace);
 
     // Create a new client
     let client = APIClient::new(kubeconfig.clone());
 
-    if let Some(matches) = matches.subcommand_matches("watch") {
-        Watcher::new(
+    if let Some(matches) = matches.subcommand_matches("local") {
+        Watcher::run(
             client.clone(),
             registry_url,
             namespace,
             matches.value_of("secret_name").expect("SECRET NAME"),
         )
-        .run()
+        .await?;
+    } else if let Some(matches) = matches.subcommand_matches("run") {
+        Runner::run(
+            client.clone(),
+            registry_url,
+            namespace,
+            matches.value_of("secret_name").expect("SECRET NAME"),
+        )
+        .await?;
+    } else if let Some(matches) = matches.subcommand_matches("add") {
+        Setup::add(
+            client.clone(),
+            registry_url,
+            namespace,
+            matches.value_of("secret_name").expect("SECRET NAME"),
+            matches.is_present("no_browser"),
+            matches.value_of("scope"),
+            matches.value_of("controller_image"),
+        )
+        .await?;
+    } else if let Some(matches) = matches.subcommand_matches("remove") {
+        Setup::remove(
+            client.clone(),
+            registry_url,
+            namespace,
+            matches.value_of("secret_name").expect("SECRET NAME"),
+        )
         .await?;
     }
     Ok(())

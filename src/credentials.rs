@@ -1,9 +1,12 @@
 use k8s_openapi::api::core::v1::Secret;
 use kube::api::ObjectMeta;
+use oauth2::prelude::*;
+use oauth2::AccessToken;
 use serde_derive::{Deserialize, Serialize};
 use serde_json::json;
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use tokio::prelude::*;
+use tokio::process::Command;
 
 /// The credentials returned as JSON by a docker credentials helper command.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -22,7 +25,7 @@ pub trait K8sImagePullSecret {
 
 impl Credentials {
     /// Constructs a new instance by forking a `gcloud` child process.
-    pub fn from_gcloud(registry_url: &str) -> anyhow::Result<Self> {
+    pub async fn from_gcloud(registry_url: &str) -> anyhow::Result<Self> {
         let mut child = Command::new("gcloud")
             .arg("auth")
             .arg("docker-helper")
@@ -34,8 +37,18 @@ impl Credentials {
             .stdin
             .as_mut()
             .unwrap()
-            .write_all(registry_url.as_bytes())?;
-        serde_json::from_slice(&child.wait_with_output()?.stdout).map_err(|e| e.into())
+            .write_all(registry_url.as_bytes())
+            .await?;
+        serde_json::from_slice(&child.wait_with_output().await?.stdout).map_err(|e| e.into())
+    }
+
+    /// Constructs a new instance from an access token
+    pub fn from_access_token(token: &AccessToken) -> Self {
+        Credentials {
+            // we have to impersonate https://github.com/GoogleCloudPlatform/docker-credential-gcr/
+            username: "_dcgcr_2_0_1_token".into(),
+            secret: token.secret().into(),
+        }
     }
 
     /// Converts the credentials into a named secret for the specified namespace.
@@ -44,6 +57,28 @@ impl Credentials {
             metadata: Some(ObjectMeta {
                 name: Some(details.name().into()),
                 namespace: Some(details.namespace().into()),
+                labels: Some(
+                    vec![
+                        (
+                            "app.kubernetes.io/name".to_string(),
+                            env!("CARGO_PKG_NAME").to_string(),
+                        ),
+                        (
+                            "app.kubernetes.io/version".to_string(),
+                            env!("CARGO_PKG_VERSION").to_string(),
+                        ),
+                        (
+                            "app.kubernetes.io/component".to_string(),
+                            "dockerconfigjson".to_string(),
+                        ),
+                        (
+                            "app.kubernetes.io/managed-by".to_string(),
+                            env!("CARGO_PKG_NAME").to_string(),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
                 ..Default::default()
             }),
             type_: Some("kubernetes.io/dockerconfigjson".into()),
