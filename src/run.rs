@@ -71,23 +71,21 @@ impl Runner<'_> {
         let secrets: Api<Secret> = Api::namespaced(self.client.clone(), self.namespace);
         if let Ok(secret) = secrets.get(&secret_name).await {
             if secret.data.is_none() {
-                return Err(anyhow!(
+                Err(anyhow!(
                     "Refresh token secret {} is missing data entry",
                     secret_name
-                ));
-            }
-            if let Some(token) = secret.data.unwrap().get("refresh_token") {
+                ))
+            } else if let Some(token) = secret.data.unwrap().get("refresh_token") {
                 let token = String::from_utf8(token.0.clone())?;
-                info!("Token decoded: {}", token);
                 Ok(RefreshToken::new(token))
             } else {
-                return Err(anyhow!(
+                Err(anyhow!(
                     "Refresh token secret {} is missing its token",
                     secret_name
-                ));
+                ))
             }
         } else {
-            return Err(anyhow!("Refresh token {} is missing", secret_name));
+            Err(anyhow!("Refresh token {} is missing", secret_name))
         }
     }
 

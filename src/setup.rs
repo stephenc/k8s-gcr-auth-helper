@@ -2,8 +2,11 @@ use std::borrow::BorrowMut;
 use std::collections::BTreeMap;
 
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
-use k8s_openapi::api::core::v1::{Container, PodSpec, PodTemplateSpec, Secret, ServiceAccount};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, OwnerReference};
+use k8s_openapi::api::core::v1::{
+    Container, LocalObjectReference, PodSpec, PodTemplateSpec, Secret, ServiceAccount,
+};
+use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, PolicyRule, RoleRef, Subject};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use kube::api::{DeleteParams, ObjectMeta, PostParams};
 use kube::client::APIClient;
 use kube::Api;
@@ -25,7 +28,6 @@ use anyhow::anyhow;
 
 use crate::credentials::K8sImagePullSecret;
 use crate::Credentials;
-use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, PolicyRule, RoleRef, Subject};
 
 pub struct Setup<'a> {
     client: APIClient,
@@ -33,6 +35,7 @@ pub struct Setup<'a> {
     namespace: &'a str,
     secret_name: &'a str,
     scope: &'a str,
+    service_account: &'a str,
     controller_image: String,
 }
 
@@ -83,7 +86,9 @@ impl Setup<'_> {
         namespace: &str,
         secret_name: &str,
         no_browser: bool,
+        force_auth: bool,
         scope: Option<&str>,
+        service_account: Option<&str>,
         controller_image: Option<&str>,
     ) -> anyhow::Result<()> {
         debug!("Target secret: {}", secret_name);
@@ -93,27 +98,30 @@ impl Setup<'_> {
             namespace,
             secret_name,
             scope: scope.unwrap_or(Self::GCRCRED_HELPER_SCOPE),
+            service_account: service_account.unwrap_or("default"),
             controller_image: controller_image
                 .map(String::from)
-                .unwrap_or(Self::default_controller_image()),
+                .unwrap_or_else(Self::default_controller_image),
         };
 
-        debug!("Getting refresh token");
-        let token = runner.request_token_interactive(no_browser).await?;
-        debug!(
-            "Upserting refresh token secret {}",
-            runner.refresh_token_name()
-        );
-        runner
-            .upsert_secret(runner.refresh_token_name(), runner.as_secret_bytes(&token))
-            .await?;
-        debug!("Upserting secret {}", runner.secret_name);
-        runner
-            .upsert_secret(
-                runner.secret_name.into(),
-                Credentials::from_access_token(token.access_token()).as_secret_bytes(&runner),
-            )
-            .await?;
+        if force_auth || !runner.is_secret_exist(runner.secret_name.into()).await? {
+            debug!("Getting refresh token");
+            let token = runner.request_token_interactive(no_browser).await?;
+            debug!(
+                "Upserting refresh token secret {}",
+                runner.refresh_token_name()
+            );
+            runner
+                .upsert_secret(runner.refresh_token_name(), runner.as_secret_bytes(&token))
+                .await?;
+            debug!("Upserting secret {}", runner.secret_name);
+            runner
+                .upsert_secret(
+                    runner.secret_name.into(),
+                    Credentials::from_access_token(token.access_token()).as_secret_bytes(&runner),
+                )
+                .await?;
+        }
         debug!(
             "Upserting controller service account {}",
             runner.service_account_name()
@@ -142,6 +150,12 @@ impl Setup<'_> {
         runner
             .upsert_delpoyment(runner.controller_name(), runner.as_deployment())
             .await?;
+        if !runner.service_account.is_empty() {
+            debug!("Adding imagePullSecret to service account {}", "default");
+            runner
+                .update_service_account("default".into(), true)
+                .await?;
+        }
         Ok(())
     }
 
@@ -150,6 +164,7 @@ impl Setup<'_> {
         registry_url: &str,
         namespace: &str,
         secret_name: &str,
+        service_account: Option<&str>,
     ) -> anyhow::Result<()> {
         debug!("Target secret: {}", secret_name);
         let runner = Setup {
@@ -158,9 +173,19 @@ impl Setup<'_> {
             namespace,
             secret_name,
             scope: Self::GCRCRED_HELPER_SCOPE,
+            service_account: service_account.unwrap_or("default"),
             controller_image: Self::default_controller_image(),
         };
 
+        if !runner.service_account.is_empty() {
+            debug!(
+                "Removing imagePullSecret from service account {}",
+                "default"
+            );
+            runner
+                .update_service_account("default".into(), false)
+                .await?;
+        }
         debug!(
             "Deleting controller deployment {}",
             runner.controller_name()
@@ -292,6 +317,47 @@ impl Setup<'_> {
         Ok(())
     }
 
+    async fn update_service_account(
+        &self,
+        name: String,
+        include_pull_secret: bool,
+    ) -> anyhow::Result<()> {
+        let pp = PostParams::default();
+        let objects: Api<ServiceAccount> = Api::namespaced(self.client.clone(), self.namespace);
+        if let Ok(service_account) = objects.get(&name).await {
+            let service_account = ServiceAccount {
+                image_pull_secrets: match &service_account.image_pull_secrets {
+                    Some(vec) => {
+                        let mut v: Vec<LocalObjectReference> = Vec::new();
+                        if include_pull_secret {
+                            v.push(LocalObjectReference {
+                                name: Some(self.secret_name.into()),
+                            });
+                        }
+                        for x in vec.iter().filter(|x| {
+                            if let Some(n) = &x.name {
+                                &name != n
+                            } else {
+                                true
+                            }
+                        }) {
+                            v.push(x.clone())
+                        }
+                        Some(v)
+                    }
+                    None => Some(vec![LocalObjectReference {
+                        name: Some(self.secret_name.into()),
+                    }]),
+                },
+                ..service_account
+            };
+            let data = serde_json::to_vec(&service_account).unwrap();
+            objects.replace(&name, &pp, data).await?;
+            debug!("ServiceAccount {} updated", name);
+        }
+        Ok(())
+    }
+
     async fn delete_service_account(&self, name: String) -> anyhow::Result<()> {
         let dp = DeleteParams::default();
         let objects: Api<ServiceAccount> = Api::namespaced(self.client.clone(), self.namespace);
@@ -326,6 +392,11 @@ impl Setup<'_> {
             debug!("Deployment {} deleted", name);
         }
         Ok(())
+    }
+
+    async fn is_secret_exist(&self, secret_name: String) -> anyhow::Result<bool> {
+        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), self.namespace);
+        Ok(secrets.get(&secret_name).await.is_ok())
     }
 
     async fn upsert_secret(&self, secret_name: String, data: Vec<u8>) -> anyhow::Result<()> {
@@ -419,7 +490,7 @@ impl Setup<'_> {
                 },
                 template: PodTemplateSpec {
                     metadata: Some(ObjectMeta {
-                        labels: Some(labels.clone()),
+                        labels: Some(labels),
                         ..Default::default()
                     }),
                     spec: Some(PodSpec {
@@ -473,12 +544,21 @@ impl Setup<'_> {
                     api_groups: Some(vec!["".to_string()]),
                     resources: Some(vec!["secrets".to_string()]),
                     verbs: vec![
+                        "get".to_string(),
                         "create".to_string(),
                         "delete".to_string(),
                         "patch".to_string(),
+                        "list".to_string(),
                         "update".to_string(),
                     ],
                     resource_names: Some(vec![self.secret_name.to_string()]),
+                    ..Default::default()
+                },
+                PolicyRule {
+                    api_groups: Some(vec!["".to_string()]),
+                    resources: Some(vec!["secrets".to_string()]),
+                    verbs: vec!["get".to_string(), "list".to_string(), "view".to_string()],
+                    resource_names: Some(vec![self.refresh_token_name()]),
                     ..Default::default()
                 },
                 PolicyRule {

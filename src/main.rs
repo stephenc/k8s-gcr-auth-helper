@@ -80,6 +80,13 @@ async fn main() -> anyhow::Result<()> {
                         .required(true)
                         .index(1),
                 )
+                .arg(
+                    Arg::with_name("service_account")
+                        .long("service-account")
+                        .value_name("NAME")
+                        .takes_value(true)
+                        .help("The service account to update the imagePullSecrets of (default: default)")
+                )
         )
         .subcommand(
             SubCommand::with_name("add")
@@ -97,11 +104,23 @@ async fn main() -> anyhow::Result<()> {
                         .help("Forbid automatic browser launch"),
                 )
                 .arg(
+                    Arg::with_name("force_auth")
+                        .long("force-auth")
+                        .help("Force renewal of the refresh token even if already configured"),
+                )
+                .arg(
                     Arg::with_name("scope")
                         .long("scope")
                         .value_name("SCOPE")
                         .takes_value(true)
                         .help("The token scope to request (default: https://www.googleapis.com/auth/cloud-platform)")
+                )
+                .arg(
+                    Arg::with_name("service_account")
+                        .long("service-account")
+                        .value_name("NAME")
+                        .takes_value(true)
+                        .help("The service account to update the imagePullSecrets of (default: default)")
                 )
                 .arg(
                     Arg::with_name("controller_image")
@@ -166,8 +185,10 @@ async fn main() -> anyhow::Result<()> {
             namespace,
             matches.value_of("secret_name").expect("SECRET NAME"),
             matches.is_present("no_browser"),
+            matches.is_present("force_auth"),
             matches.value_of("scope"),
             matches.value_of("controller_image"),
+            matches.value_of("service_account"),
         )
         .await?;
     } else if let Some(matches) = matches.subcommand_matches("remove") {
@@ -176,6 +197,7 @@ async fn main() -> anyhow::Result<()> {
             registry_url,
             namespace,
             matches.value_of("secret_name").expect("SECRET NAME"),
+            matches.value_of("service_account"),
         )
         .await?;
     }
