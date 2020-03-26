@@ -1,50 +1,52 @@
-use crate::credentials::K8sImagePullSecret;
-use crate::Credentials;
 use chrono::{Duration, Utc};
+use clap::{App, Arg, ArgMatches, SubCommand};
 use futures::{StreamExt, TryStreamExt};
-use k8s_openapi::api::core::v1::{Event, Secret};
-use kube::api::{ListParams, PostParams, WatchEvent};
+use k8s_openapi::api::core::v1::Event;
+use kube::api::{ListParams, WatchEvent};
 use kube::client::APIClient;
 use kube::runtime::Informer;
-use kube::{Api, Resource};
+use kube::Resource;
 use regex::Regex;
+
+use crate::common::KubeCrud;
+use crate::{CredentialConfiguration, Credentials, Targets};
 
 pub struct Watcher<'a> {
     client: APIClient,
-    registry_url: &'a str,
-    namespace: &'a str,
+    targets: Targets,
     secret_name: &'a str,
 }
 
-impl K8sImagePullSecret for Watcher<'_> {
-    fn registry_url(&self) -> &str {
-        self.registry_url
-    }
-
-    fn namespace(&self) -> &str {
-        self.namespace
-    }
-
-    fn name(&self) -> &str {
-        self.secret_name
+impl<'a> From<&'a Watcher<'a>> for CredentialConfiguration<'a> {
+    fn from(w: &'a Watcher<'a>) -> Self {
+        CredentialConfiguration::new(w.secret_name, &w.targets)
     }
 }
 
 impl Watcher<'_> {
+    pub fn subcommand(name: &str) -> App {
+        SubCommand::with_name(name)
+            .about("Locally listens for authentication failures and creates/updates a secret using gcloud")
+            .arg(
+                Arg::with_name("secret_name")
+                    .value_name("SECRET NAME")
+                    .help("The name of the dockerconfigjson secret to create/update")
+                    .required(true)
+                    .index(1),
+            )
+    }
     /// Main entry point for the watcher
     pub async fn run(
         client: APIClient,
-        registry_url: &str,
-        namespace: &str,
-        secret_name: &str,
+        targets: Targets,
+        matches: &ArgMatches<'_>,
     ) -> anyhow::Result<()> {
-        debug!("Target secret: {}", secret_name);
         let runner = Watcher {
             client,
-            registry_url,
-            namespace,
-            secret_name,
+            targets,
+            secret_name: matches.value_of("secret_name").expect("SECRET NAME"),
         };
+        debug!("Target secret: {}", runner.secret_name);
         // Follow the resource in all namespaces
         let resource = Resource::all::<Event>();
 
@@ -64,19 +66,14 @@ impl Watcher<'_> {
             WatchEvent::Added(event) => {
                 if Self::is_recent_gcr_auth_failure(&event) {
                     debug!("{}", event.message.unwrap_or_else(|| "".into()));
-                    let credentials = Credentials::from_gcloud(self.registry_url).await?;
-                    let data = credentials.as_secret_bytes(self);
-                    let pp = PostParams::default();
-                    let secrets: Api<Secret> = Api::namespaced(self.client.clone(), self.namespace);
-                    if secrets.get(self.secret_name).await.is_ok() {
-                        secrets.replace(self.secret_name, &pp, data).await?;
-                        debug!("Secret {} updated", self.secret_name);
-                    } else {
-                        secrets.create(&pp, data).await?;
-                        debug!("Secret {} created", self.secret_name);
-                    }
+                    Credentials::from_gcloud()
+                        .await?
+                        .as_secret(self.into())
+                        .upsert(&self.client, self.targets.namespace(), self.secret_name)
+                        .await
+                } else {
+                    Ok(())
                 }
-                Ok(())
             }
             _ => Ok(()),
         }

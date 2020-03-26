@@ -72,6 +72,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21a03abb7c9b93ae229356151a083d26218c0358866a2a59d4280c856e9482e6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "atty"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -747,6 +758,7 @@ name = "k8s-gcr-auth-helper"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.12.0",
  "chrono",
  "clap",
@@ -758,6 +770,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "kube-derive",
+ "lazy_static",
  "log",
  "oauth2",
  "regex",

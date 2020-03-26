@@ -1,22 +1,20 @@
 use std::borrow::BorrowMut;
 use std::collections::BTreeMap;
 
+use clap::{App, Arg, ArgGroup, ArgMatches, SubCommand};
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
     Container, LocalObjectReference, PodSpec, PodTemplateSpec, Secret, ServiceAccount,
 };
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, PolicyRule, RoleRef, Subject};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
-use kube::api::{DeleteParams, ObjectMeta, PostParams};
+use kube::api::{ObjectMeta, PostParams};
 use kube::client::APIClient;
 use kube::Api;
-use oauth2::basic::{BasicClient, BasicErrorResponseType, BasicTokenResponse};
+use oauth2::basic::BasicTokenResponse;
 use oauth2::prelude::SecretNewType;
 use oauth2::prelude::*;
-use oauth2::{
-    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, RedirectUrl, RequestTokenError,
-    Scope, TokenResponse, TokenUrl,
-};
+use oauth2::{AuthorizationCode, CsrfToken, RedirectUrl, RefreshToken, TokenResponse};
 use tokio::io::stdin;
 use tokio::net::TcpListener;
 use tokio::prelude::*;
@@ -26,197 +24,275 @@ use url::Url;
 
 use anyhow::anyhow;
 
-use crate::credentials::K8sImagePullSecret;
-use crate::Credentials;
+use crate::common::KubeCrud;
+use crate::{CredentialConfiguration, Credentials, Targets};
 
 pub struct Setup<'a> {
     client: APIClient,
-    registry_url: &'a str,
-    namespace: &'a str,
+    targets: Targets,
     secret_name: &'a str,
-    scope: &'a str,
     service_account: &'a str,
     controller_image: String,
+    scope: &'a str,
+    client_id: Option<&'a str>,
+    client_secret: Option<&'a str>,
+    username: Option<&'a str>,
 }
 
-impl K8sImagePullSecret for Setup<'_> {
-    fn registry_url(&self) -> &str {
-        self.registry_url
+impl<'a> From<&'a Setup<'a>> for CredentialConfiguration<'a> {
+    fn from(w: &'a Setup<'a>) -> Self {
+        CredentialConfiguration::new(w.secret_name, &w.targets)
     }
+}
 
-    fn namespace(&self) -> &str {
-        self.namespace
-    }
-
-    fn name(&self) -> &str {
-        self.secret_name
-    }
+lazy_static! {
+    static ref DEFAULT_CONTROLLER_IMAGE: String = format!(
+        "stephenc/{}:{}",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 impl Setup<'_> {
-    // NOTE: GCRCREDs "borrowed" from https://github.com/GoogleCloudPlatform/docker-credential-gcr/
-    // as they are the only ones that work with any localhost URL
-
-    /// GCRCRED_HELPER_CLIENT_ID is the client_id to be used when performing the
-    /// OAuth2 Authorization Code grant flow.
-    /// See https://developers.google.com/identity/protocols/OAuth2InstalledApp
-    const GCRCRED_HELPER_CLIENT_ID: &'static str =
-        "99426463878-o7n0bshgue20tdpm25q4at0vs2mr4utq.apps.googleusercontent.com";
-
-    /// GCRCRED_HELPER_CLIENT_NOT_SO_SECRET is the client_secret to be used when
-    /// performing the OAuth2 Authorization Code grant flow.
-    /// See https://developers.google.com/identity/protocols/OAuth2InstalledApp
-    const GCRCRED_HELPER_CLIENT_NOT_SO_SECRET: &'static str = "HpVi8cnKx8AAkddzaNrSWmS8";
-
-    const GCRCRED_HELPER_SCOPE: &'static str = "https://www.googleapis.com/auth/cloud-platform";
-
     const REDIRECT_URIAUTH_CODE_IN_TITLE_BAR: &'static str = "urn:ietf:wg:oauth:2.0:oob";
 
-    pub fn default_controller_image() -> String {
-        format!(
-            "stephenc/{}:{}",
-            env!("CARGO_PKG_NAME"),
-            env!("CARGO_PKG_VERSION")
-        )
+    pub fn add_subcommand(name: &str) -> App {
+        SubCommand::with_name(name)
+            .about("Adds an in-cluster controller")
+            .arg(
+                Arg::with_name("secret_name")
+                    .value_name("SECRET NAME")
+                    .help("The name of the managed dockerconfigjson secret")
+                    .required(true)
+                    .index(1),
+            )
+            .arg(
+                Arg::with_name("no_browser")
+                    .long("no-browser")
+                    .help("Forbid automatic browser launch"),
+            )
+            .arg(
+                Arg::with_name("force_auth")
+                    .long("force-auth-refresh")
+                    .help("Force renewal of the refresh token even if already configured"),
+            )
+            .arg(
+                Arg::with_name("oauth_scope")
+                    .long("oauth-scope")
+                    .value_name("SCOPE")
+                    .takes_value(true)
+                    .default_value(crate::oauth::GCRCRED_HELPER_SCOPE)
+                    .help("The token scope to request"),
+            )
+            .arg(
+                Arg::with_name("oauth_client_id")
+                    .long("oauth-client-id")
+                    .value_name("ID")
+                    .takes_value(true)
+                    .requires_all(&["client_secret", "username"])
+                    .help("The client_id to be used when performing the OAuth2 Authorization Code grant flow."),
+            )
+            .arg(
+                Arg::with_name("oauth_client_secret")
+                    .long("oauth-client-secret")
+                    .value_name("NAME")
+                    .takes_value(true)
+                    .help("The client_secret to be used when performing the OAuth2 Authorization Code grant flow."),
+            )
+            .arg(
+                Arg::with_name("oauth_username")
+                    .long("oauth-username")
+                    .value_name("NAME")
+                    .takes_value(true)
+                    .help("The username to pair with the authorization code"),
+            )
+            .group(ArgGroup::with_name("oauth").args(&["oauth_scope", "oauth_client_id", "oauth_client_secret", "oauth_username"]))
+            .arg(
+                Arg::with_name("service_account")
+                    .long("service-account")
+                    .value_name("NAME")
+                    .takes_value(true)
+                    .default_value("default")
+                    .help("The service account to update the imagePullSecrets of"),
+            )
+            .arg(
+                Arg::with_name("controller_image")
+                    .long("controller-image")
+                    .value_name("IMAGE")
+                    .takes_value(true)
+                    .default_value(DEFAULT_CONTROLLER_IMAGE.as_ref())
+                    .help("The controller image to use"),
+            )
+    }
+    pub fn remove_subcommand(name: &str) -> App {
+        SubCommand::with_name(name)
+            .about("Removes an in-cluster controller")
+            .arg(
+                Arg::with_name("secret_name")
+                    .value_name("SECRET NAME")
+                    .help("The name of the managed dockerconfigjson secret")
+                    .required(true)
+                    .index(1),
+            )
+            .arg(
+                Arg::with_name("service_account")
+                    .long("service-account")
+                    .value_name("NAME")
+                    .takes_value(true)
+                    .help(
+                        "The service account to update the imagePullSecrets of (default: default)",
+                    ),
+            )
     }
 
     pub async fn add(
         client: APIClient,
-        registry_url: &str,
-        namespace: &str,
-        secret_name: &str,
-        no_browser: bool,
-        force_auth: bool,
-        scope: Option<&str>,
-        service_account: Option<&str>,
-        controller_image: Option<&str>,
+        targets: Targets,
+        matches: &ArgMatches<'_>,
     ) -> anyhow::Result<()> {
-        debug!("Target secret: {}", secret_name);
-        let runner = Setup {
-            client,
-            registry_url,
-            namespace,
-            secret_name,
-            scope: scope.unwrap_or(Self::GCRCRED_HELPER_SCOPE),
-            service_account: service_account.unwrap_or("default"),
-            controller_image: controller_image
-                .map(String::from)
-                .unwrap_or_else(Self::default_controller_image),
-        };
+        let no_browser = matches.is_present("no_browser");
+        let force_auth = matches.is_present("force_auth");
 
-        if force_auth || !runner.is_secret_exist(runner.secret_name.into()).await? {
+        Setup {
+            client,
+            targets,
+            secret_name: matches.value_of("secret_name").expect("SECRET NAME"),
+            service_account: matches.value_of("service_account").unwrap_or("default"),
+            controller_image: matches
+                .value_of("controller_image")
+                .map(String::from)
+                .unwrap_or_else(|| DEFAULT_CONTROLLER_IMAGE.clone()),
+            scope: matches
+                .value_of("oauth_scope")
+                .unwrap_or(crate::oauth::GCRCRED_HELPER_SCOPE),
+            client_id: matches.value_of("oauth_client_id"),
+            client_secret: matches.value_of("oauth_client_secret"),
+            username: matches.value_of("oauth_username"),
+        }
+        .do_add(no_browser, force_auth)
+        .await
+    }
+
+    async fn do_add(self, no_browser: bool, force_auth: bool) -> anyhow::Result<()> {
+        debug!("Target secret: {}", self.secret_name);
+
+        if force_auth || self.is_existing_refresh_valid().await? {
             debug!("Getting refresh token");
-            let token = runner.request_token_interactive(no_browser).await?;
+            let token = self.request_token_interactive(no_browser).await?;
             debug!(
                 "Upserting refresh token secret {}",
-                runner.refresh_token_name()
+                self.refresh_token_name()
             );
-            runner
-                .upsert_secret(runner.refresh_token_name(), runner.as_secret_bytes(&token))
+            self.as_secret(&token)
+                .upsert(&self.client, self.namespace(), &self.refresh_token_name())
                 .await?;
-            debug!("Upserting secret {}", runner.secret_name);
-            runner
-                .upsert_secret(
-                    runner.secret_name.into(),
-                    Credentials::from_access_token(token.access_token()).as_secret_bytes(&runner),
-                )
+            debug!("Upserting secret {}", self.secret_name);
+            Credentials::from_access_token(token.access_token(), self.username)
+                .as_secret((&self).into())
+                .upsert(&self.client, self.namespace(), self.secret_name)
                 .await?;
         }
         debug!(
             "Upserting controller service account {}",
-            runner.service_account_name()
+            self.service_account_name()
         );
-        runner
-            .upsert_service_account(runner.service_account_name(), runner.as_service_account())
+        self.as_service_account()
+            .upsert(
+                &self.client,
+                &self.namespace(),
+                &self.service_account_name(),
+            )
             .await?;
-        debug!("Upserting cluster role {}", runner.cluster_role_name());
-        runner
-            .upsert_cluster_role(runner.cluster_role_name(), runner.as_cluster_role())
+        debug!("Upserting cluster role {}", self.cluster_role_name());
+        self.as_cluster_role()
+            .upsert(&self.client, self.namespace(), &self.cluster_role_name())
             .await?;
         debug!(
             "Upserting cluster role binding {}",
-            runner.cluster_role_binding_name()
+            self.cluster_role_binding_name()
         );
-        runner
-            .upsert_cluster_role_binding(
-                runner.cluster_role_binding_name(),
-                runner.as_cluster_role_binding(),
+        self.as_cluster_role_binding()
+            .upsert(
+                &self.client,
+                self.namespace(),
+                &self.cluster_role_binding_name(),
             )
             .await?;
-        debug!(
-            "Upserting controller deployment {}",
-            runner.controller_name()
-        );
-        runner
-            .upsert_delpoyment(runner.controller_name(), runner.as_deployment())
+        debug!("Upserting controller deployment {}", self.controller_name());
+        self.as_deployment()
+            .upsert(&self.client, self.namespace(), &self.controller_name())
             .await?;
-        if !runner.service_account.is_empty() {
+        if !self.service_account.is_empty() {
             debug!("Adding imagePullSecret to service account {}", "default");
-            runner
-                .update_service_account("default".into(), true)
-                .await?;
+            self.update_service_account("default".into(), true).await?;
         }
+        info!("GCR authentication helper {} added", self.secret_name);
         Ok(())
     }
 
     pub async fn remove(
         client: APIClient,
-        registry_url: &str,
-        namespace: &str,
-        secret_name: &str,
-        service_account: Option<&str>,
+        targets: Targets,
+        matches: &ArgMatches<'_>,
     ) -> anyhow::Result<()> {
-        debug!("Target secret: {}", secret_name);
-        let runner = Setup {
+        Setup {
             client,
-            registry_url,
-            namespace,
-            secret_name,
-            scope: Self::GCRCRED_HELPER_SCOPE,
-            service_account: service_account.unwrap_or("default"),
-            controller_image: Self::default_controller_image(),
-        };
+            targets,
+            secret_name: matches.value_of("secret_name").expect("SECRET NAME"),
+            service_account: matches.value_of("service_account").unwrap_or("default"),
+            controller_image: DEFAULT_CONTROLLER_IMAGE.clone(),
+            // remaining values are irrelevant as we are removing the refresh service
+            scope: crate::oauth::GCRCRED_HELPER_SCOPE,
+            client_id: None,
+            client_secret: None,
+            username: None,
+        }
+        .do_remove()
+        .await
+    }
 
-        if !runner.service_account.is_empty() {
+    async fn do_remove(self) -> anyhow::Result<()> {
+        debug!("Target secret: {}", self.secret_name);
+        if !self.service_account.is_empty() {
             debug!(
                 "Removing imagePullSecret from service account {}",
                 "default"
             );
-            runner
-                .update_service_account("default".into(), false)
-                .await?;
+            self.update_service_account("default".into(), false).await?;
         }
-        debug!(
-            "Deleting controller deployment {}",
-            runner.controller_name()
-        );
-        runner.delete_deployment(runner.controller_name()).await?;
+        debug!("Deleting controller deployment {}", self.controller_name());
+        Deployment::delete(&self.client, self.namespace(), &self.controller_name()).await?;
         debug!(
             "Deleting cluster role binding {}",
-            runner.cluster_role_binding_name()
+            self.cluster_role_binding_name()
         );
-        runner
-            .delete_cluster_role_binding(runner.cluster_role_binding_name())
-            .await?;
-        debug!("Deleting cluster role {}", runner.cluster_role_name());
-        runner
-            .delete_cluster_role(runner.cluster_role_name())
-            .await?;
+        ClusterRoleBinding::delete(
+            &self.client,
+            self.namespace(),
+            &self.cluster_role_binding_name(),
+        )
+        .await?;
+        debug!("Deleting cluster role {}", self.cluster_role_name());
+        ClusterRole::delete(&self.client, self.namespace(), &self.cluster_role_name()).await?;
         debug!(
             "Deleting controller service account {}",
-            runner.service_account_name()
+            self.service_account_name()
         );
-        runner
-            .delete_service_account(runner.service_account_name())
+        ServiceAccount::delete(&self.client, self.namespace(), &self.service_account_name())
             .await?;
-        debug!("Deleting secret {}", runner.secret_name);
-        runner.delete_secret(runner.secret_name.into()).await?;
+        debug!("Deleting secret {}", self.secret_name);
+        Secret::delete(&self.client, self.namespace(), self.secret_name).await?;
         debug!(
             "Deleting refresh token secret {}",
-            runner.refresh_token_name()
+            self.refresh_token_name()
         );
-        runner.delete_secret(runner.refresh_token_name()).await?;
+        Secret::delete(&self.client, self.namespace(), &self.refresh_token_name()).await?;
+        info!("GCR authentication helper {} removed", self.secret_name);
         Ok(())
+    }
+
+    fn namespace(&self) -> &str {
+        self.targets.namespace()
     }
 
     fn refresh_token_name(&self) -> String {
@@ -224,17 +300,17 @@ impl Setup<'_> {
     }
 
     fn controller_name(&self) -> String {
-        format!("{}-controller", self.secret_name)
+        format!("{}-refresh-service", self.secret_name)
     }
 
     fn service_account_name(&self) -> String {
-        format!("{}-service-account", self.secret_name)
+        format!("{}-refresh-service", self.secret_name)
     }
 
     fn cluster_role_name(&self) -> String {
         format!(
-            "{}:{}:{}",
-            self.namespace,
+            "{}:{}:{}-refresh",
+            self.namespace(),
             env!("CARGO_PKG_NAME").to_string(),
             self.secret_name
         )
@@ -242,79 +318,11 @@ impl Setup<'_> {
 
     fn cluster_role_binding_name(&self) -> String {
         format!(
-            "{}:{}:{}",
-            self.namespace,
+            "{}:{}:{}-refresh",
+            self.namespace(),
             env!("CARGO_PKG_NAME").to_string(),
             self.secret_name
         )
-    }
-
-    async fn upsert_cluster_role_binding(
-        &self,
-        name: String,
-        object: ClusterRoleBinding,
-    ) -> anyhow::Result<()> {
-        let data = serde_json::to_vec(&object).unwrap();
-        let pp = PostParams::default();
-        let objects: Api<ClusterRoleBinding> = Api::all(self.client.clone());
-        if objects.get(&name).await.is_ok() {
-            objects.replace(&name, &pp, data).await?;
-            debug!("ClusterRoleBinding {} updated", name);
-        } else {
-            objects.create(&pp, data).await?;
-            debug!("ClusterRoleBinding {} created", name);
-        }
-        Ok(())
-    }
-
-    async fn delete_cluster_role_binding(&self, name: String) -> anyhow::Result<()> {
-        let dp = DeleteParams::default();
-        let objects: Api<ClusterRoleBinding> = Api::all(self.client.clone());
-        if objects.delete(&name, &dp).await.is_ok() {
-            debug!("ClusterRoleBinding {} deleted", name);
-        }
-        Ok(())
-    }
-
-    async fn upsert_cluster_role(&self, name: String, object: ClusterRole) -> anyhow::Result<()> {
-        let data = serde_json::to_vec(&object).unwrap();
-        let pp = PostParams::default();
-        let objects: Api<ClusterRole> = Api::all(self.client.clone());
-        if objects.get(&name).await.is_ok() {
-            objects.replace(&name, &pp, data).await?;
-            debug!("ClusterRole {} updated", name);
-        } else {
-            objects.create(&pp, data).await?;
-            debug!("ClusterRole {} created", name);
-        }
-        Ok(())
-    }
-
-    async fn delete_cluster_role(&self, name: String) -> anyhow::Result<()> {
-        let dp = DeleteParams::default();
-        let objects: Api<ClusterRole> = Api::all(self.client.clone());
-        if objects.delete(&name, &dp).await.is_ok() {
-            debug!("ClusterRole {} deleted", name);
-        }
-        Ok(())
-    }
-
-    async fn upsert_service_account(
-        &self,
-        name: String,
-        object: ServiceAccount,
-    ) -> anyhow::Result<()> {
-        let data = serde_json::to_vec(&object).unwrap();
-        let pp = PostParams::default();
-        let objects: Api<ServiceAccount> = Api::namespaced(self.client.clone(), self.namespace);
-        if objects.get(&name).await.is_ok() {
-            objects.replace(&name, &pp, data).await?;
-            debug!("ServiceAccount {} updated", name);
-        } else {
-            objects.create(&pp, data).await?;
-            debug!("ServiceAccount {} created", name);
-        }
-        Ok(())
     }
 
     async fn update_service_account(
@@ -323,7 +331,7 @@ impl Setup<'_> {
         include_pull_secret: bool,
     ) -> anyhow::Result<()> {
         let pp = PostParams::default();
-        let objects: Api<ServiceAccount> = Api::namespaced(self.client.clone(), self.namespace);
+        let objects: Api<ServiceAccount> = Api::namespaced(self.client.clone(), self.namespace());
         if let Ok(service_account) = objects.get(&name).await {
             let service_account = ServiceAccount {
                 image_pull_secrets: match &service_account.image_pull_secrets {
@@ -336,14 +344,18 @@ impl Setup<'_> {
                         }
                         for x in vec.iter().filter(|x| {
                             if let Some(n) = &x.name {
-                                &name != n
+                                self.secret_name != n
                             } else {
                                 true
                             }
                         }) {
                             v.push(x.clone())
                         }
-                        Some(v)
+                        if v.is_empty() {
+                            None
+                        } else {
+                            Some(v)
+                        }
                     }
                     None => Some(vec![LocalObjectReference {
                         name: Some(self.secret_name.into()),
@@ -358,67 +370,58 @@ impl Setup<'_> {
         Ok(())
     }
 
-    async fn delete_service_account(&self, name: String) -> anyhow::Result<()> {
-        let dp = DeleteParams::default();
-        let objects: Api<ServiceAccount> = Api::namespaced(self.client.clone(), self.namespace);
-        if objects.delete(&name, &dp).await.is_ok() {
-            debug!("ServiceAccount {} deleted", name);
+    async fn is_existing_refresh_valid(&self) -> anyhow::Result<bool> {
+        match self.fetch_refresh_token().await {
+            Ok(refresh_token) => {
+                match crate::oauth::refresh(
+                    self.client_id,
+                    self.client_secret,
+                    self.scope,
+                    &refresh_token,
+                ) {
+                    Ok(token_response) => {
+                        debug!("Upserting secret {}", self.secret_name);
+                        Credentials::from_access_token(
+                            token_response.access_token(),
+                            self.username,
+                        )
+                        .as_secret(self.into())
+                        .upsert(&self.client, self.namespace(), self.secret_name)
+                        .await?;
+                        Ok(false)
+                    }
+                    Err(_) => {
+                        warn!("Existing refresh token is no longer valid");
+                        Ok(true)
+                    }
+                }
+            }
+            Err(_) => Ok(true),
         }
-        Ok(())
     }
 
-    async fn upsert_delpoyment(
-        &self,
-        deployment_name: String,
-        deployment: Deployment,
-    ) -> anyhow::Result<()> {
-        let data = serde_json::to_vec(&deployment).unwrap();
-        let pp = PostParams::default();
-        let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), self.namespace);
-        if deployments.get(&deployment_name).await.is_ok() {
-            deployments.replace(&deployment_name, &pp, data).await?;
-            debug!("Deployment {} updated", deployment_name);
+    async fn fetch_refresh_token(&self) -> anyhow::Result<RefreshToken> {
+        let secret_name = self.refresh_token_name();
+        debug!("Fetching referesh token from {}", secret_name);
+        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), self.namespace());
+        if let Ok(secret) = secrets.get(&secret_name).await {
+            if secret.data.is_none() {
+                Err(anyhow!(
+                    "Refresh token secret {} is missing data entry",
+                    secret_name
+                ))
+            } else if let Some(token) = secret.data.unwrap().get("refresh_token") {
+                let token = String::from_utf8(token.0.clone())?;
+                Ok(RefreshToken::new(token))
+            } else {
+                Err(anyhow!(
+                    "Refresh token secret {} is missing its token",
+                    secret_name
+                ))
+            }
         } else {
-            deployments.create(&pp, data).await?;
-            debug!("Deployment {} created", deployment_name);
+            Err(anyhow!("Refresh token {} is missing", secret_name))
         }
-        Ok(())
-    }
-
-    async fn delete_deployment(&self, name: String) -> anyhow::Result<()> {
-        let dp = DeleteParams::default();
-        let objects: Api<Deployment> = Api::namespaced(self.client.clone(), self.namespace);
-        if objects.delete(&name, &dp).await.is_ok() {
-            debug!("Deployment {} deleted", name);
-        }
-        Ok(())
-    }
-
-    async fn is_secret_exist(&self, secret_name: String) -> anyhow::Result<bool> {
-        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), self.namespace);
-        Ok(secrets.get(&secret_name).await.is_ok())
-    }
-
-    async fn upsert_secret(&self, secret_name: String, data: Vec<u8>) -> anyhow::Result<()> {
-        let pp = PostParams::default();
-        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), self.namespace);
-        if secrets.get(&secret_name).await.is_ok() {
-            secrets.replace(&secret_name, &pp, data).await?;
-            debug!("Secret {} updated", secret_name);
-        } else {
-            secrets.create(&pp, data).await?;
-            debug!("Secret {} created", secret_name);
-        }
-        Ok(())
-    }
-
-    async fn delete_secret(&self, name: String) -> anyhow::Result<()> {
-        let dp = DeleteParams::default();
-        let objects: Api<Secret> = Api::namespaced(self.client.clone(), self.namespace);
-        if objects.delete(&name, &dp).await.is_ok() {
-            debug!("Secret {} deleted", name);
-        }
-        Ok(())
     }
 
     /// Converts the refresh token into a named secret for the specified namespace.
@@ -426,7 +429,7 @@ impl Setup<'_> {
         Secret {
             metadata: Some(ObjectMeta {
                 name: Some(self.refresh_token_name()),
-                namespace: Some(self.namespace.into()),
+                namespace: Some(self.namespace().into()),
                 labels: Some(self.labels("refresh-token")),
                 ..Default::default()
             }),
@@ -441,13 +444,6 @@ impl Setup<'_> {
             ),
             ..Default::default()
         }
-    }
-
-    /// Converts the credentials into the byte array of its Secret form serialized as JSON.
-    pub fn as_secret_bytes(&self, token: &BasicTokenResponse) -> Vec<u8> {
-        serde_json::to_string(&self.as_secret(token))
-            .unwrap()
-            .into_bytes()
     }
 
     fn labels(&self, component: &str) -> BTreeMap<String, String> {
@@ -478,7 +474,7 @@ impl Setup<'_> {
         Deployment {
             metadata: Some(ObjectMeta {
                 name: Some(self.controller_name()),
-                namespace: Some(self.namespace.into()),
+                namespace: Some(self.namespace().into()),
                 labels: Some(labels.clone()),
                 ..Default::default()
             }),
@@ -498,16 +494,21 @@ impl Setup<'_> {
                         containers: vec![Container {
                             image: Some(self.controller_image.to_string()),
                             name: self.controller_name(),
-                            command: Some(vec![
-                                format!("/{}", env!("CARGO_PKG_NAME")),
-                                "--in-cluster".to_string(),
-                                "--namespace".to_string(),
-                                self.namespace.to_string(),
-                                "--registry-url".to_string(),
-                                self.registry_url.to_string(),
-                                "run".to_string(),
-                                self.secret_name.to_string(),
-                            ]),
+                            command: Some({
+                                let mut c = vec![
+                                    format!("/{}", env!("CARGO_PKG_NAME")),
+                                    "--in-cluster".to_string(),
+                                    "--namespace".to_string(),
+                                    self.namespace().to_string(),
+                                ];
+                                for url in self.targets.registry_urls().iter() {
+                                    c.push("--registry-url".to_string());
+                                    c.push((*url).to_string());
+                                }
+                                c.push("run".to_string());
+                                c.push(self.secret_name.to_string());
+                                c
+                            }),
                             ..Default::default()
                         }],
                         ..Default::default()
@@ -523,7 +524,7 @@ impl Setup<'_> {
         ServiceAccount {
             metadata: Some(ObjectMeta {
                 name: Some(self.service_account_name()),
-                namespace: Some(self.namespace.into()),
+                namespace: Some(self.namespace().into()),
                 labels: Some(self.labels("serviceaccount")),
                 ..Default::default()
             }),
@@ -543,9 +544,14 @@ impl Setup<'_> {
                 PolicyRule {
                     api_groups: Some(vec!["".to_string()]),
                     resources: Some(vec!["secrets".to_string()]),
+                    verbs: vec!["create".to_string()],
+                    ..Default::default()
+                },
+                PolicyRule {
+                    api_groups: Some(vec!["".to_string()]),
+                    resources: Some(vec!["secrets".to_string()]),
                     verbs: vec![
                         "get".to_string(),
-                        "create".to_string(),
                         "delete".to_string(),
                         "patch".to_string(),
                         "list".to_string(),
@@ -586,7 +592,7 @@ impl Setup<'_> {
             },
             subjects: Some(vec![Subject {
                 kind: "ServiceAccount".into(),
-                namespace: Some(self.namespace.into()),
+                namespace: Some(self.namespace().into()),
                 name: self.service_account_name(),
                 ..Default::default()
             }]),
@@ -607,9 +613,7 @@ impl Setup<'_> {
             None => Self::REDIRECT_URIAUTH_CODE_IN_TITLE_BAR.to_string(),
         };
 
-        let client = self
-            .new_client()
-            .await?
+        let client = crate::oauth::new_client(self.client_id, self.client_secret, self.scope)
             .set_redirect_url(RedirectUrl::new(Url::parse(&redirect_url)?));
 
         // This is the URL you should redirect the user to, in order to trigger the authorization
@@ -628,40 +632,9 @@ impl Setup<'_> {
             None => Self::code_via_prompt().await?,
         };
         // Exchange the code with a token.
-        client.exchange_code(code).map_err(Self::map_oauth_err)
-    }
-
-    pub fn map_oauth_err(e: RequestTokenError<BasicErrorResponseType>) -> anyhow::Error {
-        match e {
-            RequestTokenError::ServerResponse(e) => match e.error() {
-                BasicErrorResponseType::InvalidRequest => anyhow!("Invalid request"),
-                BasicErrorResponseType::InvalidClient => anyhow!("Invalid client"),
-                BasicErrorResponseType::InvalidGrant => anyhow!("Invalid grant"),
-                BasicErrorResponseType::UnauthorizedClient => anyhow!("Unauthorized client"),
-                BasicErrorResponseType::UnsupportedGrantType => anyhow!("Unsupported grant type"),
-                BasicErrorResponseType::InvalidScope => anyhow!("Invalid scope"),
-            },
-            RequestTokenError::Request(e) => e.into(),
-            RequestTokenError::Parse(e, _) => e.into(),
-            RequestTokenError::Other(msg) => anyhow!(msg),
-        }
-    }
-
-    pub fn new_basic_client() -> BasicClient {
-        BasicClient::new(
-            ClientId::new(Self::GCRCRED_HELPER_CLIENT_ID.to_string()),
-            Some(ClientSecret::new(
-                Self::GCRCRED_HELPER_CLIENT_NOT_SO_SECRET.to_string(),
-            )),
-            AuthUrl::new(Url::parse("https://accounts.google.com/o/oauth2/v2/auth").unwrap()),
-            Some(TokenUrl::new(
-                Url::parse("https://www.googleapis.com/oauth2/v3/token").unwrap(),
-            )),
-        )
-    }
-
-    async fn new_client(&self) -> anyhow::Result<BasicClient> {
-        Ok(Self::new_basic_client().add_scope(Scope::new(self.scope.to_string())))
+        client
+            .exchange_code(code)
+            .map_err(crate::oauth::map_oauth_err)
     }
 
     async fn code_via_prompt() -> anyhow::Result<AuthorizationCode> {

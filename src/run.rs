@@ -1,53 +1,96 @@
-use crate::credentials::K8sImagePullSecret;
-use crate::{Credentials, Setup, Watcher};
+use clap::{App, Arg, ArgMatches, SubCommand};
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::core::v1::{Event, Secret};
-use kube::api::{ListParams, PostParams, WatchEvent};
+use kube::api::{ListParams, WatchEvent};
 use kube::client::APIClient;
 use kube::runtime::Informer;
 use kube::{Api, Resource};
-
 use oauth2::prelude::*;
-use oauth2::{RefreshToken, Scope, TokenResponse};
+use oauth2::{RefreshToken, TokenResponse};
 
 use anyhow::anyhow;
 
+use crate::common::KubeCrud;
+use crate::{CredentialConfiguration, Credentials, Targets, Watcher};
+
 pub struct Runner<'a> {
     client: APIClient,
-    registry_url: &'a str,
-    namespace: &'a str,
+    targets: Targets,
     secret_name: &'a str,
+    scope: &'a str,
+    client_id: Option<&'a str>,
+    client_secret: Option<&'a str>,
+    username: Option<&'a str>,
 }
 
-impl K8sImagePullSecret for Runner<'_> {
-    fn registry_url(&self) -> &str {
-        self.registry_url
-    }
-
-    fn namespace(&self) -> &str {
-        self.namespace
-    }
-
-    fn name(&self) -> &str {
-        self.secret_name
+impl<'a> From<&'a Runner<'a>> for CredentialConfiguration<'a> {
+    fn from(w: &'a Runner<'a>) -> Self {
+        CredentialConfiguration::new(w.secret_name, &w.targets)
     }
 }
 
 impl Runner<'_> {
+    pub fn subcommand(name: &str) -> App {
+        SubCommand::with_name(name)
+            .about("Controller for in-cluster listening for authentication failures and creates/updates a secret using a refresh token secret created by 'add'")
+            .arg(
+                Arg::with_name("secret_name")
+                    .value_name("SECRET NAME")
+                    .help("The name of the dockerconfigjson secret to create/update")
+                    .required(true)
+                    .index(1),
+            )
+            .arg(
+                Arg::with_name("oauth_scope")
+                    .long("oauth-scope")
+                    .value_name("SCOPE")
+                    .takes_value(true)
+                    .default_value(crate::oauth::GCRCRED_HELPER_SCOPE)
+                    .hidden(true)
+                    .help("The token scope to request"),
+            )
+            .arg(
+                Arg::with_name("oauth_client_id")
+                    .long("oauth-client-id")
+                    .value_name("ID")
+                    .takes_value(true)
+                    .requires_all(&["client_secret", "username"])
+                    .hidden(true)
+                    .help("The client_id to be used when performing the OAuth2 Authorization Code grant flow."),
+            )
+            .arg(
+                Arg::with_name("oauth_client_secret")
+                    .long("oauth-client-secret")
+                    .value_name("NAME")
+                    .takes_value(true)
+                    .hidden(true)
+                    .help("The client_secret to be used when performing the OAuth2 Authorization Code grant flow."),
+            )
+            .arg(
+                Arg::with_name("oauth_username")
+                    .long("oauth-username")
+                    .value_name("NAME")
+                    .takes_value(true)
+                    .hidden(true)
+                    .help("The username to pair with the authorization code"),
+            )
+    }
     /// Main entry point for the watcher
     pub async fn run(
         client: APIClient,
-        registry_url: &str,
-        namespace: &str,
-        secret_name: &str,
+        targets: Targets,
+        matches: &ArgMatches<'_>,
     ) -> anyhow::Result<()> {
-        info!("Target secret: {}", secret_name);
         let runner = Runner {
             client,
-            registry_url,
-            namespace,
-            secret_name,
+            targets,
+            secret_name: matches.value_of("secret_name").expect("SECRET NAME"),
+            scope: matches.value_of("oauth_scope").expect("SCOPE"),
+            client_id: matches.value_of("oauth_client_id"),
+            client_secret: matches.value_of("oauth_client_secret"),
+            username: matches.value_of("oauth_username"),
         };
+        info!("Target secret: {}", runner.secret_name);
         // Follow the resource in all namespaces
         let resource = Resource::all::<Event>();
 
@@ -68,7 +111,7 @@ impl Runner<'_> {
     async fn refresh_token(&self) -> anyhow::Result<RefreshToken> {
         let secret_name = self.refresh_token_name();
         info!("Fetching referesh token from {}", secret_name);
-        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), self.namespace);
+        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), self.targets.namespace());
         if let Ok(secret) = secrets.get(&secret_name).await {
             if secret.data.is_none() {
                 Err(anyhow!(
@@ -96,27 +139,19 @@ impl Runner<'_> {
                 if Watcher::is_recent_gcr_auth_failure(&event) {
                     info!("{}", event.message.unwrap_or_else(|| "".into()));
                     let refresh_token = self.refresh_token().await?;
-                    let client = Setup::new_basic_client();
-                    let token_response = client
-                        .add_scope(Scope::new(
-                            "https://www.googleapis.com/auth/cloud-platform".to_string(),
-                        ))
-                        .exchange_refresh_token(&refresh_token)
-                        .map_err(Setup::map_oauth_err)?;
-                    let access_token = token_response.access_token();
-                    let credentials = Credentials::from_access_token(access_token);
-                    let data = credentials.as_secret_bytes(self);
-                    let pp = PostParams::default();
-                    let secrets: Api<Secret> = Api::namespaced(self.client.clone(), self.namespace);
-                    if secrets.get(self.secret_name).await.is_ok() {
-                        secrets.replace(self.secret_name, &pp, data).await?;
-                        info!("Secret {} updated", self.secret_name);
-                    } else {
-                        secrets.create(&pp, data).await?;
-                        info!("Secret {} created", self.secret_name);
-                    }
+                    let token_response = crate::oauth::refresh(
+                        self.client_id,
+                        self.client_secret,
+                        self.scope,
+                        &refresh_token,
+                    )?;
+                    Credentials::from_access_token(token_response.access_token(), self.username)
+                        .as_secret(self.into())
+                        .upsert(&self.client, self.targets.namespace(), self.secret_name)
+                        .await
+                } else {
+                    Ok(())
                 }
-                Ok(())
             }
             _ => Ok(()),
         }
