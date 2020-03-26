@@ -26,7 +26,7 @@ impl<'a> From<&'a Watcher<'a>> for CredentialConfiguration<'a> {
 impl Watcher<'_> {
     pub fn subcommand(name: &str) -> App {
         SubCommand::with_name(name)
-            .about("Locally listens for authentication failures and creates/updates a secret using gcloud")
+            .about("Runs an out-of-cluster refresh service using your local 'gcloud' command")
             .arg(
                 Arg::with_name("secret_name")
                     .value_name("SECRET NAME")

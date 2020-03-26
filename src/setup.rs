@@ -1,6 +1,4 @@
-use std::borrow::BorrowMut;
-use std::collections::BTreeMap;
-
+use anyhow::anyhow;
 use clap::{App, Arg, ArgGroup, ArgMatches, SubCommand};
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
@@ -15,14 +13,14 @@ use oauth2::basic::BasicTokenResponse;
 use oauth2::prelude::SecretNewType;
 use oauth2::prelude::*;
 use oauth2::{AuthorizationCode, CsrfToken, RedirectUrl, RefreshToken, TokenResponse};
+use std::borrow::BorrowMut;
+use std::collections::BTreeMap;
 use tokio::io::stdin;
 use tokio::net::TcpListener;
 use tokio::prelude::*;
 use tokio::stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
 use url::Url;
-
-use anyhow::anyhow;
 
 use crate::common::KubeCrud;
 use crate::{CredentialConfiguration, Credentials, Targets};
@@ -31,7 +29,7 @@ pub struct Setup<'a> {
     client: APIClient,
     targets: Targets,
     secret_name: &'a str,
-    service_account: &'a str,
+    service_account: Vec<&'a str>,
     controller_image: String,
     scope: &'a str,
     client_id: Option<&'a str>,
@@ -58,7 +56,7 @@ impl Setup<'_> {
 
     pub fn add_subcommand(name: &str) -> App {
         SubCommand::with_name(name)
-            .about("Adds an in-cluster controller")
+            .about("Adds an in-cluster refresh service")
             .arg(
                 Arg::with_name("secret_name")
                     .value_name("SECRET NAME")
@@ -82,6 +80,7 @@ impl Setup<'_> {
                     .value_name("SCOPE")
                     .takes_value(true)
                     .default_value(crate::oauth::GCRCRED_HELPER_SCOPE)
+                    .hidden(true)
                     .help("The token scope to request"),
             )
             .arg(
@@ -90,6 +89,7 @@ impl Setup<'_> {
                     .value_name("ID")
                     .takes_value(true)
                     .requires_all(&["client_secret", "username"])
+                    .hidden(true)
                     .help("The client_id to be used when performing the OAuth2 Authorization Code grant flow."),
             )
             .arg(
@@ -97,6 +97,7 @@ impl Setup<'_> {
                     .long("oauth-client-secret")
                     .value_name("NAME")
                     .takes_value(true)
+                    .hidden(true)
                     .help("The client_secret to be used when performing the OAuth2 Authorization Code grant flow."),
             )
             .arg(
@@ -104,6 +105,7 @@ impl Setup<'_> {
                     .long("oauth-username")
                     .value_name("NAME")
                     .takes_value(true)
+                    .hidden(true)
                     .help("The username to pair with the authorization code"),
             )
             .group(ArgGroup::with_name("oauth").args(&["oauth_scope", "oauth_client_id", "oauth_client_secret", "oauth_username"]))
@@ -111,7 +113,8 @@ impl Setup<'_> {
                 Arg::with_name("service_account")
                     .long("service-account")
                     .value_name("NAME")
-                    .takes_value(true)
+                    .multiple(true)
+                    .number_of_values(1)
                     .default_value("default")
                     .help("The service account to update the imagePullSecrets of"),
             )
@@ -126,7 +129,7 @@ impl Setup<'_> {
     }
     pub fn remove_subcommand(name: &str) -> App {
         SubCommand::with_name(name)
-            .about("Removes an in-cluster controller")
+            .about("Removes an in-cluster refresh service")
             .arg(
                 Arg::with_name("secret_name")
                     .value_name("SECRET NAME")
@@ -138,10 +141,10 @@ impl Setup<'_> {
                 Arg::with_name("service_account")
                     .long("service-account")
                     .value_name("NAME")
-                    .takes_value(true)
-                    .help(
-                        "The service account to update the imagePullSecrets of (default: default)",
-                    ),
+                    .multiple(true)
+                    .number_of_values(1)
+                    .default_value("default")
+                    .help("The service account to update the imagePullSecrets of"),
             )
     }
 
@@ -157,7 +160,10 @@ impl Setup<'_> {
             client,
             targets,
             secret_name: matches.value_of("secret_name").expect("SECRET NAME"),
-            service_account: matches.value_of("service_account").unwrap_or("default"),
+            service_account: matches
+                .values_of("service_account")
+                .map(|i| i.collect())
+                .unwrap_or_else(|| vec!["default"]),
             controller_image: matches
                 .value_of("controller_image")
                 .map(String::from)
@@ -222,9 +228,13 @@ impl Setup<'_> {
         self.as_deployment()
             .upsert(&self.client, self.namespace(), &self.controller_name())
             .await?;
-        if !self.service_account.is_empty() {
-            debug!("Adding imagePullSecret to service account {}", "default");
-            self.update_service_account("default".into(), true).await?;
+        for &service_account in self.service_account.iter() {
+            debug!(
+                "Adding imagePullSecret to service account {}",
+                service_account
+            );
+            self.update_service_account(service_account.into(), true)
+                .await?;
         }
         info!("GCR authentication helper {} added", self.secret_name);
         Ok(())
@@ -239,7 +249,10 @@ impl Setup<'_> {
             client,
             targets,
             secret_name: matches.value_of("secret_name").expect("SECRET NAME"),
-            service_account: matches.value_of("service_account").unwrap_or("default"),
+            service_account: matches
+                .values_of("service_account")
+                .map(|i| i.collect())
+                .unwrap_or_else(|| vec!["default"]),
             controller_image: DEFAULT_CONTROLLER_IMAGE.clone(),
             // remaining values are irrelevant as we are removing the refresh service
             scope: crate::oauth::GCRCRED_HELPER_SCOPE,
@@ -253,12 +266,13 @@ impl Setup<'_> {
 
     async fn do_remove(self) -> anyhow::Result<()> {
         debug!("Target secret: {}", self.secret_name);
-        if !self.service_account.is_empty() {
+        for &service_account in self.service_account.iter() {
             debug!(
                 "Removing imagePullSecret from service account {}",
-                "default"
+                service_account
             );
-            self.update_service_account("default".into(), false).await?;
+            self.update_service_account(service_account.into(), false)
+                .await?;
         }
         debug!("Deleting controller deployment {}", self.controller_name());
         Deployment::delete(&self.client, self.namespace(), &self.controller_name()).await?;

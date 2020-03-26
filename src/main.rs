@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
                 .long("in-cluster")
                 .help("Try to resolve in-cluster Kubernetes API connection details"),
         )
-        .subcommand(Watcher::subcommand("local"))
+        .subcommand(Watcher::subcommand("gcloud"))
         .subcommand(Runner::subcommand("run"))
         .subcommand(Setup::remove_subcommand("remove"))
         .subcommand(Setup::add_subcommand("add"))

@@ -32,7 +32,7 @@ impl<'a> From<&'a Runner<'a>> for CredentialConfiguration<'a> {
 impl Runner<'_> {
     pub fn subcommand(name: &str) -> App {
         SubCommand::with_name(name)
-            .about("Controller for in-cluster listening for authentication failures and creates/updates a secret using a refresh token secret created by 'add'")
+            .about("The in-cluster refresh service using a refresh token secret created by 'add'")
             .arg(
                 Arg::with_name("secret_name")
                     .value_name("SECRET NAME")
