@@ -8,12 +8,20 @@ on:
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+        rust: [stable]
 
     steps:
+    - uses: hecrj/setup-rust-action@v1
+      with:
+        rust-version: ${{ matrix.rust }}
     - uses: actions/checkout@v2
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    - name: Release
+      run: cargo build --verbose --release
