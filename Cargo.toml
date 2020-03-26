@@ -32,10 +32,10 @@ tokio-util = { version = "0.3.1", features = ["codec"] }
 url = "1.0"
 webbrowser = "0.5.2"
 
-[target.'cfg(windows)'.dependencies.kube]
-version = "0.30.0"
-default-features = false
-features = [ "rustls-tls", "rustls" ]
+#[target.'cfg(windows)'.dependencies.kube]
+#version = "0.30.0"
+#default-features = false
+#features = [ "rustls-tls", "rustls" ]
 
 [target.'cfg(unix)'.dependencies.kube]
 version = "0.30.0"
