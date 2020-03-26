@@ -25,3 +25,8 @@ jobs:
       run: cargo test --verbose
     - name: Release
       run: cargo build --verbose --release
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v1
+      with:
+        name: k8s-gcr-auth-helper-${{ matrix.os }}
+        path: target/release/k8s-gcr-auth-helper
