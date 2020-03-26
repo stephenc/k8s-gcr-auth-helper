@@ -15,13 +15,13 @@ jobs:
         rust: [stable]
 
     steps:
+    - name: Install openssl
+      if: matrix.os == 'windows-latest'
+      run: choco install openssl
     - uses: hecrj/setup-rust-action@v1
       with:
         rust-version: ${{ matrix.rust }}
     - uses: actions/checkout@v2
-    - name: Install openssl
-      if: matrix.os == 'windows-latest'
-      run: vcpkg install openssl
     - name: Build
       run: cargo build --verbose
     - name: Run tests
