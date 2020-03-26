@@ -377,8 +377,7 @@ impl Setup<'_> {
                 },
                 ..service_account
             };
-            let data = serde_json::to_vec(&service_account).unwrap();
-            objects.replace(&name, &pp, data).await?;
+            objects.replace(&name, &pp, &service_account).await?;
             debug!("ServiceAccount {} updated", name);
         }
         Ok(())

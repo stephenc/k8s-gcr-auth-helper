@@ -1,6 +1,5 @@
 extern crate k8s_openapi;
 extern crate kube;
-extern crate kube_derive;
 #[macro_use]
 extern crate log;
 extern crate serde_derive;

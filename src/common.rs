@@ -73,14 +73,13 @@ pub trait KubeCrud {
 #[async_trait]
 impl KubeCrud for Secret {
     async fn upsert(&self, client: &APIClient, namespace: &str, name: &str) -> anyhow::Result<()> {
-        let data = serde_json::to_vec(self).unwrap();
         let pp = PostParams::default();
         let secrets: Api<Secret> = Api::namespaced(client.clone(), namespace);
         if secrets.get(&name).await.is_ok() {
-            secrets.replace(&name, &pp, data).await?;
+            secrets.replace(&name, &pp, &self).await?;
             debug!("Secret {} updated", name);
         } else {
-            secrets.create(&pp, data).await?;
+            secrets.create(&pp, &self).await?;
             debug!("Secret {} created", name);
         }
         Ok(())
@@ -111,12 +110,10 @@ impl KubeCrud for ServiceAccount {
                 secrets: object.secrets.or(existing.secrets),
                 image_pull_secrets: object.image_pull_secrets.or(existing.image_pull_secrets),
             };
-            let data = serde_json::to_vec(&object).unwrap();
-            accounts.replace(&name, &pp, data).await?;
+            accounts.replace(&name, &pp, &object).await?;
             debug!("ServiceAccount {} updated", name);
         } else {
-            let data = serde_json::to_vec(self).unwrap();
-            accounts.create(&pp, data).await?;
+            accounts.create(&pp, &self).await?;
             debug!("ServiceAccount {} created", name);
         }
         Ok(())
@@ -134,14 +131,17 @@ impl KubeCrud for ServiceAccount {
 #[async_trait]
 impl KubeCrud for Deployment {
     async fn upsert(&self, client: &APIClient, namespace: &str, name: &str) -> Result<(), Error> {
-        let data = serde_json::to_vec(self).unwrap();
         let pp = PostParams::default();
         let deployments: Api<Deployment> = Api::namespaced(client.clone(), namespace);
         if deployments.get(&name).await.is_ok() {
-            deployments.replace(&name, &pp, data).await?;
+            if deployments.replace(&name, &pp, &self).await.is_err() {
+                debug!("Deployment {} cannot be updated, trying to delete and recreate", name);
+                deployments.delete(&name, &DeleteParams::default()).await?;
+                deployments.create(&pp, &self).await?;
+            };
             debug!("Deployment {} updated", name);
         } else {
-            deployments.create(&pp, data).await?;
+            deployments.create(&pp, &self).await?;
             debug!("Deployment {} created", name);
         }
         Ok(())
@@ -159,14 +159,13 @@ impl KubeCrud for Deployment {
 #[async_trait]
 impl KubeCrud for ClusterRoleBinding {
     async fn upsert(&self, client: &APIClient, _namespace: &str, name: &str) -> Result<(), Error> {
-        let data = serde_json::to_vec(self).unwrap();
         let pp = PostParams::default();
         let bindings: Api<ClusterRoleBinding> = Api::all(client.clone());
         if bindings.get(&name).await.is_ok() {
-            bindings.replace(&name, &pp, data).await?;
+            bindings.replace(&name, &pp, &self).await?;
             debug!("ClusterRoleBinding {} updated", name);
         } else {
-            bindings.create(&pp, data).await?;
+            bindings.create(&pp, &self).await?;
             debug!("ClusterRoleBinding {} created", name);
         }
         Ok(())
@@ -184,14 +183,13 @@ impl KubeCrud for ClusterRoleBinding {
 #[async_trait]
 impl KubeCrud for ClusterRole {
     async fn upsert(&self, client: &APIClient, _namespace: &str, name: &str) -> Result<(), Error> {
-        let data = serde_json::to_vec(self).unwrap();
         let pp = PostParams::default();
         let bindings: Api<ClusterRole> = Api::all(client.clone());
         if bindings.get(&name).await.is_ok() {
-            bindings.replace(&name, &pp, data).await?;
+            bindings.replace(&name, &pp, &self).await?;
             debug!("ClusterRole {} updated", name);
         } else {
-            bindings.create(&pp, data).await?;
+            bindings.create(&pp, &self).await?;
             debug!("ClusterRole {} created", name);
         }
         Ok(())
