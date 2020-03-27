@@ -5,7 +5,6 @@ authors = ["Stephen Connolly <stephen.alan.connolly@gmail.com>"]
 edition = "2018"
 description = "A Kubernetes authentication helper to expose per-user credentials as Image Pull Secrets for Google Container Registry"
 license = "Apache-2.0"
-license-file = "LICENSE"
 repository = "https://github.com/stephenc/k8s-gcr-auth-helper"
 readme = "README.md"
 
