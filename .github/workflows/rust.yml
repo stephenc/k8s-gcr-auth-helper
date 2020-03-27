@@ -85,14 +85,17 @@ jobs:
       run: cargo build --verbose
       env:
         RUSTFLAGS: '-Ctarget-feature=+crt-static'
+        OPENSSL_DIR: 'C:/vcpkg/packages/openssl_x86-windows/share/openssl/'
     - name: Run tests
       run: cargo test --verbose
       env:
         RUSTFLAGS: '-Ctarget-feature=+crt-static'
+        OPENSSL_DIR: 'C:/vcpkg/packages/openssl_x86-windows/share/openssl/'
     - name: Release
       run: cargo build --verbose --release
       env:
         RUSTFLAGS: '-Ctarget-feature=+crt-static'
+        OPENSSL_DIR: 'C:/vcpkg/packages/openssl_x86-windows/share/openssl/'
     - name: Upload build artifact
       uses: actions/upload-artifact@v1
       with:
