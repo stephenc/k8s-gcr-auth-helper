@@ -7,26 +7,14 @@ on:
     branches: [ master ]
 
 jobs:
-  build:
+  unix:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [windows-latest,ubuntu-latest] #ubuntu-latest, windows-latest, macOS-latest]
+        os: [ubuntu-latest, macOS-latest]
         rust: [stable]
 
     steps:
-    - name: Cache vcpkg
-      if: matrix.os == 'windows-latest'
-      uses: actions/cache@v1
-      with:
-        key: ${{ runner.os }}-vcpkg-1
-        path: 'C:/vcpkg/'
-    - name: Install openssl
-      if: matrix.os == 'windows-latest'
-      run: |
-        vcpkg search opensll
-        vcpkg install openssl
-        vcpkg integrate install
     - uses: hecrj/setup-rust-action@v1
       with:
         rust-version: ${{ matrix.rust }}
@@ -53,13 +41,59 @@ jobs:
     - name: Release
       run: cargo build --verbose --release
     - name: Upload build artifact
-      if: matrix.os != 'windows-latest'
       uses: actions/upload-artifact@v1
       with:
         name: k8s-gcr-auth-helper-${{ matrix.os }}
         path: target/release/k8s-gcr-auth-helper
+  windows:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest]
+        rust: [stable]
+    steps:
+    - name: Cache vcpkg
+      uses: actions/cache@v1
+      with:
+        key: ${{ runner.os }}-vcpkg-1
+        path: 'C:/vcpkg/'
+    - name: Install openssl
+      run: |
+        vcpkg search opensll
+        vcpkg install openssl
+        vcpkg integrate install
+    - uses: hecrj/setup-rust-action@v1
+      with:
+        rust-version: ${{ matrix.rust }}
+    - uses: actions/checkout@v2
+    - name: Cache cargo registry
+      uses: actions/cache@v1
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+    - name: Cache cargo index
+      uses: actions/cache@v1
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+    - name: Cache cargo build
+      uses: actions/cache@v1
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+    - name: Build
+      run: cargo build --verbose
+      env:
+        RUSTFLAGS: '-Ctarget-feature=+crt-static'
+    - name: Run tests
+      run: cargo test --verbose
+      env:
+        RUSTFLAGS: '-Ctarget-feature=+crt-static'
+    - name: Release
+      run: cargo build --verbose --release
+      env:
+        RUSTFLAGS: '-Ctarget-feature=+crt-static'
     - name: Upload build artifact
-      if: matrix.os == 'windows-latest'
       uses: actions/upload-artifact@v1
       with:
         name: k8s-gcr-auth-helper-${{ matrix.os }}
