@@ -1,5 +1,7 @@
 # k8s-gcr-auth-helper
 
+![Logo](images/logo.svg)
+
 ![Rust](https://github.com/stephenc/k8s-gcr-auth-helper/workflows/Rust/badge.svg)  [![Crates.io](https://img.shields.io/crates/v/k8s-gcr-auth-helper.svg)](https://crates.io/crates/k8s-gcr-auth-helper)
 
 A Kubernetes authentication helper to expose per-user credentials as Image Pull Secrets for Google Container Registry
