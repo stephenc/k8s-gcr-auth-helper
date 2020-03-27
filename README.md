@@ -56,6 +56,12 @@ To install and add to the default service account
 k8s-gcr-auth-helper add --service-account default gcr-pull-secret-name
 ```                                                                    
 
+To install and add to the all service accounts in the namespace
+
+```
+k8s-gcr-auth-helper add --all-service-accounts gcr-pull-secret-name
+```                                                                    
+
 *NOTE:* You can specify multiple `--service-account` arguments to install in multiple service accounts. To install in multiple namespaces run the command multiple times (with `--namespace` if you want to avoid changing namespace)
 
 The first time the command is run it will open a browser to get an OAuth2 refresh token which will be stored in the cluster. 
@@ -67,4 +73,4 @@ To remove use the same command with `add` replaced by `remove`, e.g.:
 k8s-gcr-auth-helper remove gcr-pull-secret-name
 ```     
 
-*NOTE:* Be sure to provide the same `--service-account` arguments to `remove` if you want to revert the `imagePullSecrets` changes to those service accounts. If you forget you can always edit the service accounts manually. 
+*NOTE:* If you have manually added an `imagePullSecrets` reference to additional service accounts you can specify them with `--service-account ...` or you can just purge the secret reference from all accounts with `--all-service-accounts`. If you forget you can always edit the service accounts manually. 

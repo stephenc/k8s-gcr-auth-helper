@@ -135,7 +135,10 @@ impl KubeCrud for Deployment {
         let deployments: Api<Deployment> = Api::namespaced(client.clone(), namespace);
         if deployments.get(&name).await.is_ok() {
             if deployments.replace(&name, &pp, &self).await.is_err() {
-                debug!("Deployment {} cannot be updated, trying to delete and recreate", name);
+                debug!(
+                    "Deployment {} cannot be updated, trying to delete and recreate",
+                    name
+                );
                 deployments.delete(&name, &DeleteParams::default()).await?;
                 deployments.create(&pp, &self).await?;
             };

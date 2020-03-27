@@ -1,4 +1,6 @@
-use anyhow::anyhow;
+use std::borrow::BorrowMut;
+use std::collections::BTreeMap;
+
 use clap::{App, Arg, ArgGroup, ArgMatches, SubCommand};
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
@@ -6,21 +8,21 @@ use k8s_openapi::api::core::v1::{
 };
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, PolicyRule, RoleRef, Subject};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
-use kube::api::{ObjectMeta, PostParams};
+use kube::api::{ListParams, Meta, ObjectMeta, PostParams};
 use kube::client::APIClient;
 use kube::Api;
 use oauth2::basic::BasicTokenResponse;
 use oauth2::prelude::SecretNewType;
 use oauth2::prelude::*;
 use oauth2::{AuthorizationCode, CsrfToken, RedirectUrl, RefreshToken, TokenResponse};
-use std::borrow::BorrowMut;
-use std::collections::BTreeMap;
 use tokio::io::stdin;
 use tokio::net::TcpListener;
 use tokio::prelude::*;
 use tokio::stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
 use url::Url;
+
+use anyhow::anyhow;
 
 use crate::common::KubeCrud;
 use crate::{CredentialConfiguration, Credentials, Targets};
@@ -29,7 +31,7 @@ pub struct Setup<'a> {
     client: APIClient,
     targets: Targets,
     secret_name: &'a str,
-    service_account: Vec<&'a str>,
+    service_accounts: Vec<String>,
     controller_image: String,
     scope: &'a str,
     client_id: Option<&'a str>,
@@ -50,6 +52,8 @@ lazy_static! {
         env!("CARGO_PKG_VERSION")
     );
 }
+
+const SERVICE_ACCOUNTS_ANNOTATION: &str = "k8s-gcr-auth-helper.stephenc.github.io/service-accounts";
 
 impl Setup<'_> {
     const REDIRECT_URIAUTH_CODE_IN_TITLE_BAR: &'static str = "urn:ietf:wg:oauth:2.0:oob";
@@ -119,6 +123,12 @@ impl Setup<'_> {
                     .help("The service account to update the imagePullSecrets of"),
             )
             .arg(
+                Arg::with_name("all_service_accounts")
+                    .long("all-service-accounts")
+                    .conflicts_with("service_account")
+                    .help("Updates the imagePullSecrets of all the service accounts in the target namespace"),
+            )
+            .arg(
                 Arg::with_name("controller_image")
                     .long("controller-image")
                     .value_name("IMAGE")
@@ -144,7 +154,13 @@ impl Setup<'_> {
                     .multiple(true)
                     .number_of_values(1)
                     .default_value("default")
-                    .help("The service account to update the imagePullSecrets of"),
+                    .help("The additional service account to update the imagePullSecrets of"),
+            )
+            .arg(
+                Arg::with_name("all_service_accounts")
+                    .long("all-service-accounts")
+                    .conflicts_with("service_account")
+                    .help("Updates the imagePullSecrets of all the service accounts in the target namespace"),
             )
     }
 
@@ -157,13 +173,10 @@ impl Setup<'_> {
         let force_auth = matches.is_present("force_auth");
 
         Setup {
+            service_accounts: Self::service_account_names(&client, &targets, matches).await?,
             client,
             targets,
             secret_name: matches.value_of("secret_name").expect("SECRET NAME"),
-            service_account: matches
-                .values_of("service_account")
-                .map(|i| i.collect())
-                .unwrap_or_else(|| vec!["default"]),
             controller_image: matches
                 .value_of("controller_image")
                 .map(String::from)
@@ -177,6 +190,30 @@ impl Setup<'_> {
         }
         .do_add(no_browser, force_auth)
         .await
+    }
+
+    async fn service_account_names(
+        client: &APIClient,
+        targets: &Targets,
+        matches: &ArgMatches<'_>,
+    ) -> anyhow::Result<Vec<String>> {
+        let service_accounts = if matches.is_present("all_service_accounts") {
+            let accounts: Api<ServiceAccount> =
+                Api::namespaced(client.clone(), &targets.namespace());
+            let mut result = Vec::new();
+            if let Ok(list) = accounts.list(&ListParams::default()).await {
+                for item in list.items {
+                    result.push(item.name())
+                }
+            }
+            result
+        } else {
+            matches
+                .values_of("service_account")
+                .map(|i| i.map(|s| s.to_string()).collect())
+                .unwrap_or_else(|| vec!["default".to_string()])
+        };
+        Ok(service_accounts)
     }
 
     async fn do_add(self, no_browser: bool, force_auth: bool) -> anyhow::Result<()> {
@@ -228,7 +265,7 @@ impl Setup<'_> {
         self.as_deployment()
             .upsert(&self.client, self.namespace(), &self.controller_name())
             .await?;
-        for &service_account in self.service_account.iter() {
+        for service_account in self.service_accounts.iter() {
             debug!(
                 "Adding imagePullSecret to service account {}",
                 service_account
@@ -246,13 +283,10 @@ impl Setup<'_> {
         matches: &ArgMatches<'_>,
     ) -> anyhow::Result<()> {
         Setup {
+            service_accounts: Self::service_account_names(&client, &targets, matches).await?,
             client,
             targets,
             secret_name: matches.value_of("secret_name").expect("SECRET NAME"),
-            service_account: matches
-                .values_of("service_account")
-                .map(|i| i.collect())
-                .unwrap_or_else(|| vec!["default"]),
             controller_image: DEFAULT_CONTROLLER_IMAGE.clone(),
             // remaining values are irrelevant as we are removing the refresh service
             scope: crate::oauth::GCRCRED_HELPER_SCOPE,
@@ -266,7 +300,7 @@ impl Setup<'_> {
 
     async fn do_remove(self) -> anyhow::Result<()> {
         debug!("Target secret: {}", self.secret_name);
-        for &service_account in self.service_account.iter() {
+        for service_account in self.service_accounts.iter() {
             debug!(
                 "Removing imagePullSecret from service account {}",
                 service_account
@@ -274,6 +308,7 @@ impl Setup<'_> {
             self.update_service_account(service_account.into(), false)
                 .await?;
         }
+        self.update_service_accounts().await?;
         debug!("Deleting controller deployment {}", self.controller_name());
         Deployment::delete(&self.client, self.namespace(), &self.controller_name()).await?;
         debug!(
@@ -302,6 +337,27 @@ impl Setup<'_> {
         );
         Secret::delete(&self.client, self.namespace(), &self.refresh_token_name()).await?;
         info!("GCR authentication helper {} removed", self.secret_name);
+        Ok(())
+    }
+
+    async fn update_service_accounts(&self) -> anyhow::Result<()> {
+        let secrets: Api<Secret> = Api::namespaced(self.client.clone(), self.namespace());
+        if let Ok(secret) = secrets.get(self.secret_name).await {
+            if let Some(annotations) = &secret.meta().annotations {
+                if let Some(service_accounts) = annotations.get(SERVICE_ACCOUNTS_ANNOTATION) {
+                    for service_account in service_accounts.split(',') {
+                        if !self.service_accounts.contains(&service_account.to_string()) {
+                            debug!(
+                                "Removing imagePullSecret from service account {}",
+                                &service_account
+                            );
+                            self.update_service_account(service_account.into(), false)
+                                .await?;
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -444,6 +500,14 @@ impl Setup<'_> {
                 name: Some(self.refresh_token_name()),
                 namespace: Some(self.namespace().into()),
                 labels: Some(self.labels("refresh-token")),
+                annotations: Some(
+                    vec![(
+                        SERVICE_ACCOUNTS_ANNOTATION.to_string(),
+                        self.service_accounts.join(","),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
                 ..Default::default()
             }),
             type_: Some("Opaque".into()),
