@@ -138,3 +138,15 @@ jobs:
           asset_path: target\k8s-gcr-auth-helper-${{ env.target_triple }}.zip
           asset_name: k8s-gcr-auth-helper-${{ env.target_triple }}
           asset_content_type: application/zip
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@master
+      - name: docker build
+        uses: mr-smithers-excellent/docker-build-push@v2
+        with:
+          image: stephenc/k8s-gcr-auth-helper
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
