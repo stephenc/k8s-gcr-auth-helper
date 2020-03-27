@@ -3,6 +3,7 @@ name: Rust
 on:
   push:
     branches: [ master ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ master ]
 
@@ -35,8 +36,10 @@ jobs:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
     - name: Build
+      if: not( startsWith( github.ref, 'refs/tags' ) )
       run: cargo build --verbose
     - name: Run tests
+      if: not( startsWith( github.ref, 'refs/tags' ) )
       run: cargo test --verbose
     - name: Release
       run: cargo build --verbose --release
@@ -44,10 +47,6 @@ jobs:
       run: |
         eval $(rustc --print cfg | grep target_)
         echo "::set-env name=target_triple::${target_arch:-unknown}-${target_vendor:-unknown}-${target_os:-unknown}"
-    - name: Debugging
-      run: |
-        echo target_triple=${target_triple}
-        echo target_triple=${{ env.target_triple }}
     - name: Upload build artifact
       uses: actions/upload-artifact@v1
       with:
@@ -60,16 +59,6 @@ jobs:
         os: [windows-latest]
         rust: [stable]
     steps:
-#    - name: Cache vcpkg install openssl
-#      uses: actions/cache@v1
-#      with:
-#        key: ${{ runner.os }}-vcpkg-1
-#        path: 'C:/vcpkg/'
-#    - name: Install openssl
-#      run: |
-#        vcpkg search opensll
-#        vcpkg install openssl
-#        vcpkg integrate install
     - uses: hecrj/setup-rust-action@v1
       with:
         rust-version: ${{ matrix.rust }}
@@ -90,20 +79,13 @@ jobs:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
     - name: Build
+      if: not( startsWith( github.ref, 'refs/tags' ) )
       run: cargo build --verbose --no-default-features --features rustls-tls
-      env:
-        RUSTFLAGS: '-Ctarget-feature=+crt-static'
-        OPENSSL_DIR: 'C:/vcpkg/packages/openssl_x86-windows/share/openssl/'
     - name: Run tests
+      if: not( startsWith( github.ref, 'refs/tags' ) )
       run: cargo test --verbose --no-default-features --features rustls-tls
-      env:
-        RUSTFLAGS: '-Ctarget-feature=+crt-static'
-        OPENSSL_DIR: 'C:/vcpkg/packages/openssl_x86-windows/share/openssl/'
     - name: Release
       run: cargo build --verbose --release --no-default-features --features rustls-tls
-      env:
-        RUSTFLAGS: '-Ctarget-feature=+crt-static'
-        OPENSSL_DIR: 'C:/vcpkg/packages/openssl_x86-windows/share/openssl/'
     - name: Upload build artifact
       uses: actions/upload-artifact@v1
       with:
