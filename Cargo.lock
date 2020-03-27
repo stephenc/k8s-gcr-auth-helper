@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-gcr-auth-helper"
-version = "0.1.3"
+version = "0.1.4-snapshot"
 dependencies = [
  "anyhow",
  "async-trait",
