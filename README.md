@@ -1,6 +1,6 @@
 # k8s-gcr-auth-helper
 
-![Rust](https://github.com/stephenc/k8s-gcr-auth-helper/workflows/Rust/badge.svg)
+![Rust](https://github.com/stephenc/k8s-gcr-auth-helper/workflows/Rust/badge.svg)  [![Crates.io](https://img.shields.io/crates/v/k8s-gcr-auth-helper.svg)](https://crates.io/crates/k8s-gcr-auth-helper)
 
 A Kubernetes authentication helper to expose per-user credentials as Image Pull Secrets for Google Container Registry
 
@@ -33,4 +33,6 @@ To remove use the same command with `add` replaced by `remove`, e.g.:
 
 ```
 k8s-gcr-auth-helper remove gcr-pull-secret-name
-```
+```     
+
+*NOTE:* Be sure to provide the same `--service-account` arguments to `remove` if you want to revert the `imagePullSecrets` changes to those service accounts. If you forget you can always edit the service accounts manually. 
