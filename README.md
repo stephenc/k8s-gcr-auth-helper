@@ -61,6 +61,8 @@ k3d delete --name auth-test
 
 ## Use
 
+### I don't mind my refresh token being stored in my cluster
+
 To install in the current namespace of your current Kubernetes cluster:
 
 ```
@@ -91,3 +93,15 @@ k8s-gcr-auth-helper remove gcr-pull-secret-name
 ```     
 
 *NOTE:* If you have manually added an `imagePullSecrets` reference to additional service accounts you can specify them with `--service-account ...` or you can just purge the secret reference from all accounts with `--all-service-accounts`. If you forget you can always edit the service accounts manually. 
+
+### I'm paranoid
+
+Paranoid mode assumes you have `gcloud` configured and authenticated.
+
+```
+k8s-gcr-auth-helper gcloud gcr-pull-secret-name
+``` 
+
+This will run a slightly different version of the refresh service *locally in your terminal*.
+While the process is running, any auth failures will be processed by requesting a new access token by forking the request to your locally installed `gcloud` program.
+As soon as you terminate the process, the updates will stop and the access token in the cluster will have expired in at most 1 hour.

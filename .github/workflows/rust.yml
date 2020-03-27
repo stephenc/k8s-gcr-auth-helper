@@ -45,11 +45,19 @@ jobs:
       run: |
         eval $(rustc --print cfg | grep target_)
         echo "::set-env name=target_triple::${target_arch:-unknown}-${target_vendor:-unknown}-${target_os:-unknown}${target_env:+-}${target_env:-}"
+    - name: Backage binary distributions
+      run: |
+        tar -czf target/k8s-gcr-auth-helper-${{ env.target_triple }}.tar.gz -C target/release k8s-gcr-auth-helper
     - name: Upload build artifact
       uses: actions/upload-artifact@v1
       with:
         name: k8s-gcr-auth-helper-${{ env.target_triple }}
         path: target/release/k8s-gcr-auth-helper
+    - name: Upload build distribution
+      uses: actions/upload-artifact@v1
+      with:
+        name: k8s-gcr-auth-helper-${{ env.target_triple }}.tar.gz
+        path: target/k8s-gcr-auth-helper-${{ env.target_triple }}.tar.gz
   windows:
     runs-on: ${{ matrix.os }}
     strategy:

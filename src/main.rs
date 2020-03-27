@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     // Create a new client
     let client = APIClient::new(kubeconfig.clone());
 
-    if let Some(matches) = matches.subcommand_matches("local") {
+    if let Some(matches) = matches.subcommand_matches("gcloud") {
         Watcher::run(client, targets, matches).await?;
     } else if let Some(matches) = matches.subcommand_matches("run") {
         Runner::run(client, targets, matches).await?;
@@ -69,6 +69,14 @@ async fn main() -> anyhow::Result<()> {
         Setup::add(client, targets, matches).await?;
     } else if let Some(matches) = matches.subcommand_matches("remove") {
         Setup::remove(client, targets, matches).await?;
+    } else {
+        eprintln!(
+            "No subcommand supplied, '{} help' to display details the available subcommands",
+            std::env::args()
+                .next()
+                .unwrap_or_else(|| env!("CARGO_PKG_NAME").to_string())
+        );
+        std::process::exit(1);
     }
     Ok(())
 }
