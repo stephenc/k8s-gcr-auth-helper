@@ -118,6 +118,10 @@ jobs:
         run: cargo build --verbose --release --no-default-features --features rustls-tls
       - name: Run tests
         run: cargo test --verbose --release --no-default-features --features rustls-tls
+      - name: Pick up upload URL
+        uses: actions/download-artifact@v1
+        with:
+          name: release-upload-url
       - name: Prepare to upload artifacts
         shell: bash
         run: |
