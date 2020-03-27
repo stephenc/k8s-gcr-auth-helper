@@ -3,7 +3,6 @@ name: Rust
 on:
   push:
     branches: [ master ]
-    tags: [ 'v*' ]
   pull_request:
     branches: [ master ]
 
@@ -39,8 +38,6 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
-    - name: Release
-      run: cargo build --verbose --release
     - name: Determine Target Env
       run: |
         eval $(rustc --print cfg | grep target_)
@@ -52,7 +49,7 @@ jobs:
       uses: actions/upload-artifact@v1
       with:
         name: k8s-gcr-auth-helper-${{ env.target_triple }}
-        path: target/release/k8s-gcr-auth-helper
+        path: target/debug/k8s-gcr-auth-helper
     - name: Upload build distribution
       uses: actions/upload-artifact@v1
       with:
@@ -88,10 +85,8 @@ jobs:
       run: cargo build --verbose --no-default-features --features rustls-tls
     - name: Run tests
       run: cargo test --verbose --no-default-features --features rustls-tls
-    - name: Release
-      run: cargo build --verbose --release --no-default-features --features rustls-tls
     - name: Upload build artifact
       uses: actions/upload-artifact@v1
       with:
         name: k8s-gcr-auth-helper-x86_64-pc-windows-msvc
-        path: target/release/k8s-gcr-auth-helper.exe
+        path: target/debug/k8s-gcr-auth-helper.exe
