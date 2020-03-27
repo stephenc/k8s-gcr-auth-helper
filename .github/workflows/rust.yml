@@ -11,10 +11,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest] #ubuntu-latest, windows-latest, macOS-latest]
+        os: [windows-latest,ubuntu-latest] #ubuntu-latest, windows-latest, macOS-latest]
         rust: [stable]
 
     steps:
+    - name: Cache vcpkg
+      uses: actions/cache@1
+      with:
+        key: ${{ runner.os }}-vcpkg-1
+        path: 'C:/vcpkg/'
     - name: Install openssl
       if: matrix.os == 'windows-latest'
       run: |
