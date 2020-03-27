@@ -6,9 +6,39 @@ A Kubernetes authentication helper to expose per-user credentials as Image Pull 
 
 ## Build
 
+
+
 ```
 cargo install k8s-gcr-auth-helper
-```                              
+```
+
+*NOTE:* On Windows, if you are having trouble building with native TLS you can switch to rustls, e.g.
+
+```
+cargo install k8s-gcr-auth-helper --no-default-features --features rustls-tls
+```                                                   
+
+The docker image also needs to be built and available to your Kubernetes cluster if you want to use the `add` mode. For example to test your local changes using k3d
+
+```                        
+# set up a cluster to test with
+k3d create --name auth-test
+export KUBECONFIG=$(k3d get-kubeconfig --name auth-test)
+
+# build the controller image with local changes (do not use :latest as that will pull Always)
+docker build --tag k8s-gcr-auth-helper:local .                                               
+
+# run the local changes helper
+cargo run -- add --controller-image k8s-gcr-auth-helper:local --service-account default gcr-secret
+
+# now deploy your services into k3d that use a GCR hosted image
+
+# when done, so you can try again
+cargo run -- remove --service-account default gcr-secret
+
+# when really done
+k3d delete --name auth-test
+```
 
 ## Use
 
