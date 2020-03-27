@@ -44,6 +44,10 @@ jobs:
       run: |
         eval $(rustc --print cfg | grep target_)
         echo "::set-env target_triple=${target_arch:-unknown}-${target_vendor:-unknown}-${target_os:-unknown}"
+    - name: Debugging
+      run: |
+        echo target_triple=${target_triple}
+        echo target_triple=${{ env.target_triple }}
     - name: Upload build artifact
       uses: actions/upload-artifact@v1
       with:
