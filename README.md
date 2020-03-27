@@ -4,11 +4,26 @@
 
 ![Rust](https://github.com/stephenc/k8s-gcr-auth-helper/workflows/Rust/badge.svg)  [![Crates.io](https://img.shields.io/crates/v/k8s-gcr-auth-helper.svg)](https://crates.io/crates/k8s-gcr-auth-helper) [![](https://images.microbadger.com/badges/image/stephenc/k8s-gcr-auth-helper.svg)](https://hub.docker.com/r/stephenc/k8s-gcr-auth-helper/) [![](https://images.microbadger.com/badges/version/stephenc/k8s-gcr-auth-helper.svg)](https://hub.docker.com/r/stephenc/k8s-gcr-auth-helper/)
 
-A Kubernetes authentication helper to expose per-user credentials as Image Pull Secrets for Google Container Registry
+A Kubernetes authentication helper to expose per-user credentials as Image Pull Secrets for Google Container Registry.
+
+## Why would you need this?
+
+If you have private container images stored in Google Container Registry but you want to test them using a local Kubernetes cluster, e.g. [k3d](https://github.com/rancher/k3d)/[k3s](https://github.com/rancher/k3s) or [minikube](https://kubernetes.io/docs/tasks/tools/install-minikube/) you will need to provide the authentication details to your local Kubernetes cluster.
+
+If you do not have the permissions to create a service account in Google Cloud, you will have to use short-lived (1h) access tokens.
+Updating the secret every hour gets annoying real fast.
+
+This helper automates away the problem.
+
+## Install
+
+Pre-built binaries are available from the [GitHub Releases](https://github.com/stephenc/k8s-gcr-auth-helper/releases).
+
+OS-X Homebrew package is available from [stephenc/stable](https://github.com/stephenc/homebrew-stable): `brew install stephenc/stable/k8s-gcr-auth-helper`
+
+All other platforms can build from source using [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
 
 ## Build
-
-
 
 ```
 cargo install k8s-gcr-auth-helper
@@ -19,6 +34,8 @@ cargo install k8s-gcr-auth-helper
 ```
 cargo install k8s-gcr-auth-helper --no-default-features --features rustls-tls
 ```                                                   
+
+## Testing
 
 The docker image also needs to be built and available to your Kubernetes cluster if you want to use the `add` mode. For example to test your local changes using k3d
 
