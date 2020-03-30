@@ -85,3 +85,20 @@ jobs:
       with:
         name: k8s-gcr-auth-helper-x86_64-pc-windows-msvc
         path: target/debug/k8s-gcr-auth-helper.exe
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@master
+      - name: Docker build
+        run: |
+          mkdir -p target
+          docker build --tag k8s-gcr-auth-helper:build --target build .
+          docker build --tag k8s-gcr-auth-helper:latest .
+          docker run --rm -v $(pwd):/output cp /home/rust/.cargo/bin/k8s-gcr-auth-helper /output/target/
+          tar -czf target/k8s-gcr-auth-helper-x86_64-unknown-linux-musl.tar.gz -C target k8s-gcr-auth-helper
+      - name: Upload build distribution
+        uses: actions/upload-artifact@v1
+        with:
+          name: k8s-gcr-auth-helper-x86_64-unknown-linux-musl.tar.gz
+          path: target/k8s-gcr-auth-helper-x86_64-unknown-linux-musl.tar.gz
