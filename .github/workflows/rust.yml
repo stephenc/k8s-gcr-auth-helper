@@ -95,7 +95,7 @@ jobs:
       uses: actions/upload-artifact@v1
       with:
         name: k8s-gcr-auth-helper-x86_64-pc-windows-msvc-msi
-        path: target/wix/k8s-gcr-auth-helper-${{ BUILD_VERSION }}.msi
+        path: target/wix/k8s-gcr-auth-helper-${{ env.BUILD_VERSION }}.msi
   docker:
     runs-on: ubuntu-latest
     steps:
