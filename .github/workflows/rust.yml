@@ -76,8 +76,12 @@ jobs:
       with:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+    - name: Prep for installer build
+      run: cargo install cargo-wix
     - name: Build
-      run: cargo build --verbose --no-default-features --features rustls-tls
+      run: |
+        cargo build --verbose --no-default-features --features rustls-tls
+        cargo wix --no-build --dbg-build
     - name: Run tests
       run: cargo test --verbose --no-default-features --features rustls-tls
     - name: Upload build artifact
@@ -85,6 +89,11 @@ jobs:
       with:
         name: k8s-gcr-auth-helper-x86_64-pc-windows-msvc
         path: target/debug/k8s-gcr-auth-helper.exe
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v1
+      with:
+        name: k8s-gcr-auth-helper-x86_64-pc-windows-msvc-msi
+        path: target/wix/*.msi
   docker:
     runs-on: ubuntu-latest
     steps:
@@ -95,7 +104,7 @@ jobs:
           mkdir -p target
           docker build --tag k8s-gcr-auth-helper:build --target build .
           docker build --tag k8s-gcr-auth-helper:latest .
-          docker run --rm -v $(pwd):/output cp /home/rust/.cargo/bin/k8s-gcr-auth-helper /output/target/
+          docker run --rm -v $(pwd):/output k8s-gcr-auth-helper:build cp /home/rust/.cargo/bin/k8s-gcr-auth-helper /output/target/
           tar -czf target/k8s-gcr-auth-helper-x86_64-unknown-linux-musl.tar.gz -C target k8s-gcr-auth-helper
       - name: Upload build distribution
         uses: actions/upload-artifact@v1
