@@ -120,6 +120,7 @@ jobs:
         run: |
           cargo build --verbose --release --no-default-features --features rustls-tls
           cargo wix --no-build --nocapture
+          (cargo pkgid) -replace "^.*#","" -replace "([^0-9.].*)?$","" -replace "^","::set-env name=BUILD_VERSION::"
       - name: Run tests
         run: cargo test --verbose --release --no-default-features --features rustls-tls
       - name: Pick up upload URL
@@ -143,9 +144,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ env.release_upload_url }}
-          asset_path: target\k8s-gcr-auth-helper-${{ env.target_triple }}.zip
+          asset_path: target/k8s-gcr-auth-helper-${{ env.target_triple }}.zip
           asset_name: k8s-gcr-auth-helper-${{ env.target_triple }}
           asset_content_type: application/zip
+      - name: Upload Release Asset
+        id: upload-release-asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ env.release_upload_url }}
+          asset_path: target/wix/k8s-gcr-auth-helper-${{ env.BUILD_VERSION }}-x86_64.msi
+          asset_name: k8s-gcr-auth-helper-${{ env.target_triple }}.msi
+          asset_content_type: application/x-msi
   docker:
     runs-on: ubuntu-latest
     steps:

@@ -83,7 +83,6 @@ jobs:
         cargo build --verbose --no-default-features --features rustls-tls
         cargo wix --no-build --dbg-build --nocapture -i ((cargo pkgid) -replace "^.*#","" -replace "([^0-9.].*)?$","")
         (cargo pkgid) -replace "^.*#","" -replace "([^0-9.].*)?$","" -replace "^","::set-env name=BUILD_VERSION::"
-        ls target/wix
     - name: Run tests
       run: cargo test --verbose --no-default-features --features rustls-tls
     - name: Upload build artifact
@@ -95,7 +94,7 @@ jobs:
       uses: actions/upload-artifact@v1
       with:
         name: k8s-gcr-auth-helper-x86_64-pc-windows-msvc-msi
-        path: target/wix/k8s-gcr-auth-helper-${{ env.BUILD_VERSION }}.msi
+        path: target/wix/k8s-gcr-auth-helper-${{ env.BUILD_VERSION }}-x86_64.msi
   docker:
     runs-on: ubuntu-latest
     steps:
