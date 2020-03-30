@@ -178,6 +178,10 @@ jobs:
           registry: docker.io
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Pick up upload URL
+        uses: actions/download-artifact@v1
+        with:
+          name: release-upload-url
       - name: Prepare to upload artifacts
         shell: bash
         run: |
