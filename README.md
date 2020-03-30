@@ -2,7 +2,7 @@
 
 ![Logo](images/logo.svg)
 
-![Release](https://github.com/stephenc/k8s-gcr-auth-helper/workflows/Release/badge.svg) ![Test](https://github.com/stephenc/k8s-gcr-auth-helper/workflows/Test/badge.svg) [![Crates.io](https://img.shields.io/crates/v/k8s-gcr-auth-helper.svg)](https://crates.io/crates/k8s-gcr-auth-helper) [![Crates.io](https://img.shields.io/crates/d/k8s-gcr-auth-helper)](https://crates.io/crates/k8s-gcr-auth-helper) [![Docker Image](https://img.shields.io/docker/pulls/stephenc/k8s-gcr-auth-helper?maxAge=2592000)](https://hub.docker.com/r/stephenc/k8s-gcr-auth-helper/) 
+![Release](https://github.com/stephenc/k8s-gcr-auth-helper/workflows/Release/badge.svg) ![Test](https://github.com/stephenc/k8s-gcr-auth-helper/workflows/Test/badge.svg) [![Crates.io](https://img.shields.io/crates/v/k8s-gcr-auth-helper.svg?maxAge=2592000)](https://crates.io/crates/k8s-gcr-auth-helper) [![Crates.io](https://img.shields.io/crates/d/k8s-gcr-auth-helper.svg?maxAge=2592000)](https://crates.io/crates/k8s-gcr-auth-helper) [![Docker Image](https://img.shields.io/docker/pulls/stephenc/k8s-gcr-auth-helper.svg?maxAge=2592000)](https://hub.docker.com/r/stephenc/k8s-gcr-auth-helper/) 
 
 A Kubernetes authentication helper to expose per-user credentials as Image Pull Secrets for Google Container Registry.
 
