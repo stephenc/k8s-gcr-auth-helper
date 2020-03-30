@@ -119,7 +119,7 @@ jobs:
       - name: Release
         run: |
           cargo build --verbose --release --no-default-features --features rustls-tls
-          cargo wix --no-build
+          cargo wix --no-build --nocapture
       - name: Run tests
         run: cargo test --verbose --release --no-default-features --features rustls-tls
       - name: Pick up upload URL
@@ -156,7 +156,9 @@ jobs:
           mkdir -p target
           docker build --tag k8s-gcr-auth-helper:build --target build .
           docker build --tag k8s-gcr-auth-helper:latest .
-          docker run --rm -v $(pwd):/output k8s-gcr-auth-helper:build cp /home/rust/.cargo/bin/k8s-gcr-auth-helper /output/target/
+          ID=$(docker run -d k8s-gcr-auth-helper:build cat)
+          docker cp $ID:/home/rust/.cargo/bin/k8s-gcr-auth-helper ./target/
+          docker rm --force $ID
           tar -czf target/k8s-gcr-auth-helper-x86_64-unknown-linux-musl.tar.gz -C target k8s-gcr-auth-helper
       - name: Docker push
         uses: mr-smithers-excellent/docker-build-push@v2
